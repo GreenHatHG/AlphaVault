@@ -6,3 +6,4 @@ pytz
 supervisor
 requests
 python-dotenv
+litellm

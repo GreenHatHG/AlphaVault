@@ -6,6 +6,15 @@ venv/
 .env
 # Local database
 data.db
+workdb.sqlite
+archivedb.sqlite
+xueqiu_batch.sqlite3
+xueqiu_batch.sqlite3-shm
+xueqiu_batch.sqlite3-wal
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
 
 # IDE
 .idea/
@@ -14,3 +23,11 @@ data.db
 # OS / logs
 .DS_Store
 *.log
+
+# Local data dumps
+weibo/
+weibo1/
+*.csv
+
+# Trace files
+trace.txt
