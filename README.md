@@ -111,6 +111,11 @@ python3 sync_workdb_to_turso.py \
 ## 本地数据库结构
 见需求文档：`chat-export-1772618779602.md`。
 
+## Streamlit 前端
+```bash
+streamlit run streamlit_app.py
+```
+
 ## 常见问题
 - `auth role not found`：Turso token 与 DB 不匹配，请重新生成 token 并核对 URL。
 - RSS 抓取正常但 LLM 不跑：确认 LLM 参数与代理配置一致，且 `--api-key` 已设置。

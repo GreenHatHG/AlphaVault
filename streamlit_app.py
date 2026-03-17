@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -10,12 +11,19 @@ from typing import Dict, List, Tuple
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 import streamlit as st
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+
+load_dotenv()
 
 
-DB_SOURCES = [
+DB_SOURCES_LOCAL = [
     {"name": "weibo", "path": "workdb.sqlite"},
     {"name": "xueqiu", "path": "xueqiu_batch.sqlite3"},
 ]
+
+DB_MODE = os.getenv("STREAMLIT_DB_MODE", "local").strip().lower()
+USE_TURSO = DB_MODE in {"cloud", "turso", "archive"}
 
 
 def parse_json_list(value: object) -> List[str]:
@@ -63,24 +71,62 @@ def load_sqlite_tables(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     return posts, assertions
 
 
+@st.cache_data(show_spinner=False)
+def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not db_url:
+        raise RuntimeError("Missing TURSO_DATABASE_URL")
+    if db_url.startswith("libsql://"):
+        turso_url = db_url[9:]
+    else:
+        turso_url = db_url
+    engine = create_engine(
+        f"sqlite+libsql://{turso_url}?secure=true",
+        connect_args={"auth_token": auth_token} if auth_token else {},
+        future=True,
+    )
+    posts_query = """
+        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+               final_status AS status, invest_score, processed_at, model, prompt_version
+        FROM posts
+    """
+    assertions_query = "SELECT * FROM assertions"
+    posts = pd.read_sql_query(posts_query, engine)
+    assertions = pd.read_sql_query(assertions_query, engine)
+    return posts, assertions
+
+
 def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     base = Path(__file__).resolve().parent
     posts_frames: List[pd.DataFrame] = []
     assertions_frames: List[pd.DataFrame] = []
     missing: List[str] = []
 
-    for source in DB_SOURCES:
-        path = base / source["path"]
-        if not path.exists():
-            missing.append(source["path"])
-            continue
-        posts, assertions = load_sqlite_tables(str(path))
-        posts = standardize_posts(posts, source["name"])
-        posts = normalize_datetime_columns(posts)
-        assertions = standardize_assertions(assertions, posts, source["name"])
-        assertions = normalize_assertions_datetime(assertions)
-        posts_frames.append(posts)
-        assertions_frames.append(assertions)
+    if USE_TURSO:
+        turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+        turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+        if not turso_url:
+            missing.append("TURSO_DATABASE_URL")
+        else:
+            posts, assertions = load_turso_tables(turso_url, turso_token)
+            posts = standardize_posts(posts, "archive")
+            posts = normalize_datetime_columns(posts)
+            assertions = standardize_assertions(assertions, posts, "archive")
+            assertions = normalize_assertions_datetime(assertions)
+            posts_frames.append(posts)
+            assertions_frames.append(assertions)
+    else:
+        for source in DB_SOURCES_LOCAL:
+            path = base / source["path"]
+            if not path.exists():
+                missing.append(source["path"])
+                continue
+            posts, assertions = load_sqlite_tables(str(path))
+            posts = standardize_posts(posts, source["name"])
+            posts = normalize_datetime_columns(posts)
+            assertions = standardize_assertions(assertions, posts, source["name"])
+            assertions = normalize_assertions_datetime(assertions)
+            posts_frames.append(posts)
+            assertions_frames.append(assertions)
 
     if posts_frames:
         posts_all = pd.concat(posts_frames, ignore_index=True)
