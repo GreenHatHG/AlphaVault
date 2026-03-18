@@ -3,6 +3,9 @@ set -eu
 
 mkdir -p /data
 
+echo "[entrypoint] running startup healthcheck..."
+python3 -u /app/startup_healthcheck.py
+
 parse_simple_cron() {
   name="$1"
   cron="$2"

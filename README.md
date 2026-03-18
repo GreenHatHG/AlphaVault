@@ -68,6 +68,11 @@ streamlit run streamlit_app.py
 - Web：Streamlit
 - Worker：`weibo_rss_turso_worker.py`
 
+启动时会先做一次 startup check（失败就直接退出容器）：
+- 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
+- Turso：必须配置 `TURSO_DATABASE_URL`，并且能连、能写
+- Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
+
 定时（通过 env 配）：
 - 简化 cron（推荐）：`RSS_CRON="*/15 6-22 * * *"` 表示 6 点到 22 点，每 15 分钟跑一次
 
