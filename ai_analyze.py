@@ -388,9 +388,33 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
             parts.append(f"message={_truncate_text(_compact_text(message), 300)}")
         cause_chain = details.get("cause_chain") or []
         if isinstance(cause_chain, list) and cause_chain:
-            first = cause_chain[0] if isinstance(cause_chain[0], dict) else None
-            if first:
-                parts.append(f"cause={first.get('type','')}: {_truncate_text(_compact_text(first.get('message','')), 200)}")
+            cause_items = [item for item in cause_chain if isinstance(item, dict)]
+            picked: List[Dict[str, str]] = []
+            for item in cause_items:
+                msg = _compact_text(item.get("message", ""))
+                if msg:
+                    picked.append({"type": _compact_text(item.get("type", "")), "message": msg})
+            if not picked and cause_items:
+                first = cause_items[0]
+                picked.append(
+                    {
+                        "type": _compact_text(first.get("type", "")),
+                        "message": _compact_text(first.get("message", "")),
+                    }
+                )
+            if picked:
+                parts.append(
+                    f"cause={picked[0].get('type','')}: {_truncate_text(_compact_text(picked[0].get('message','')), 200)}"
+                )
+            if len(picked) >= 2:
+                parts.append(
+                    f"cause2={picked[1].get('type','')}: {_truncate_text(_compact_text(picked[1].get('message','')), 140)}"
+                )
+            for item in picked[:2]:
+                msg = _compact_text(item.get("message", "")).lower()
+                if "<!doctype html" in msg or "<html" in msg:
+                    parts.append("hint=base_url_returns_html")
+                    break
         return _truncate_text(" ".join(parts), limit)
     except Exception:
         return _truncate_text(f"{type(exc).__name__} message={_compact_text(str(exc))}", limit)

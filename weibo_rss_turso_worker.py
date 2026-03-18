@@ -422,6 +422,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         trace_out = Path(trace_out_env)
 
     base_url = str(args.base_url or "").strip()
+    if bool(args.verbose) and base_url:
+        if not base_url.rstrip("/").endswith("/v1"):
+            print(f"[ai] warn base_url_maybe_missing_v1 base_url={base_url}", flush=True)
 
     api_key = ""
     if args.api_key:
@@ -527,7 +530,17 @@ def _process_one_post_uid(
             assertions=assertions,
             )
     except Exception as e:
-        msg = f"ai:{format_llm_error_one_line(e, limit=950)}"
+        base_url_for_log = (config.base_url or "").strip()
+        if base_url_for_log:
+            base_url_for_log = base_url_for_log.split("?", 1)[0].split("#", 1)[0]
+            base_url_for_log = base_url_for_log[:220]
+        ctx = (
+            f" cfg_model={config.model}"
+            f" api_mode={config.api_mode}"
+            f" stream={1 if config.ai_stream else 0}"
+            f" base_url={base_url_for_log or '(empty)'}"
+        )
+        msg = f"ai:{format_llm_error_one_line(e, limit=700)}{ctx}"
         now_epoch = int(time.time())
         retry_count = 1
         try:
