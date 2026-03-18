@@ -549,7 +549,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
                 ]
             ]
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -573,7 +573,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
                 "url",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -649,7 +649,7 @@ def show_risk_radar(assertions_filtered: pd.DataFrame) -> None:
                 "last_evidence",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -692,7 +692,7 @@ def show_topic_timeline(assertions_filtered: pd.DataFrame) -> None:
                 "url",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -722,7 +722,7 @@ def show_learning_library(assertions_filtered: pd.DataFrame) -> None:
                 "url",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -797,7 +797,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
         st.markdown("**同作者观点变化**")
         st.dataframe(
             change_df.sort_values(by="latest_time", ascending=False),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -844,7 +844,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
         st.markdown("**不同作者观点冲突**")
         st.dataframe(
             conflict_df.sort_values(by="bull_count", ascending=False),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -876,7 +876,7 @@ def show_tables(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame)
                 "url",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -900,7 +900,7 @@ def show_tables(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame)
                 "industries_str",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
