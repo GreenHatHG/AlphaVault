@@ -220,8 +220,7 @@ def _collect_streamed_ai_text(stream_response: Any, *, api_mode: str) -> str:
 
     if api_mode == AI_MODE_COMPLETION and chunks:
         try:
-            import litellm  # type: ignore
-
+            litellm = _import_litellm()
             rebuilt = litellm.stream_chunk_builder(chunks)
             rebuilt_text = _extract_ai_text(rebuilt)
             if rebuilt_text:
@@ -234,6 +233,19 @@ def _collect_streamed_ai_text(stream_response: Any, *, api_mode: str) -> str:
         if chunk_text:
             return chunk_text
     return ""
+
+
+def _import_litellm():
+    try:
+        import litellm  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("litellm_not_installed") from exc
+
+    if hasattr(litellm, "suppress_debug_info"):
+        # Prevent LiteLLM from printing "Give Feedback / Get Help" debug info on exceptions.
+        litellm.suppress_debug_info = True
+
+    return litellm
 
 
 def _resolve_litellm_model_name(model_name: str, base_url: str) -> str:
@@ -298,10 +310,7 @@ def _call_ai_with_litellm(
     trace_out: Optional[Path],
     trace_label: str,
 ) -> Dict[str, Any]:
-    try:
-        import litellm  # type: ignore
-    except Exception as exc:
-        raise RuntimeError("litellm_not_installed") from exc
+    litellm = _import_litellm()
 
     request_model_name = _resolve_litellm_model_name(model_name, base_url)
     last_error: Optional[Exception] = None
