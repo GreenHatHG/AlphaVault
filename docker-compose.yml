@@ -3,12 +3,6 @@ services:
     build: .
     ports:
       - "8080:8080"
-    volumes:
-      - alphavault-data:/data
     env_file:
       - .env
     restart: unless-stopped
-
-volumes:
-  alphavault-data:
-

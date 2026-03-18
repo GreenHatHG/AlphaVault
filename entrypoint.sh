@@ -80,11 +80,9 @@ parse_simple_cron() {
   )
 }
 
-# Defaults (do not expose to users; use RSS_CRON/SYNC_CRON)
+# Defaults (do not expose to users; use RSS_CRON)
 RSS_INTERVAL_SECONDS="600"
 RSS_ACTIVE_HOURS=""
-SYNC_INTERVAL_SECONDS="600"
-SYNC_ACTIVE_HOURS=""
 
 # Cron shortcut (simple pattern)
 # Example: RSS_CRON="*/15 6-22 * * *"
@@ -94,15 +92,8 @@ if [ -n "${RSS_CRON:-}" ]; then
   RSS_ACTIVE_HOURS="${out#*|}"
 fi
 
-if [ -n "${SYNC_CRON:-}" ]; then
-  out="$(parse_simple_cron "SYNC_CRON" "$SYNC_CRON")"
-  SYNC_INTERVAL_SECONDS="${out%%|*}"
-  SYNC_ACTIVE_HOURS="${out#*|}"
-fi
-
-export RSS_INTERVAL_SECONDS RSS_ACTIVE_HOURS SYNC_INTERVAL_SECONDS SYNC_ACTIVE_HOURS
+export RSS_INTERVAL_SECONDS RSS_ACTIVE_HOURS
 
 echo "[entrypoint] rss_interval=${RSS_INTERVAL_SECONDS}s rss_active=${RSS_ACTIVE_HOURS:-all}"
-echo "[entrypoint] sync_interval=${SYNC_INTERVAL_SECONDS}s sync_active=${SYNC_ACTIVE_HOURS:-all}"
 echo "[entrypoint] starting supervisord..."
 exec supervisord -c /app/supervisord.conf

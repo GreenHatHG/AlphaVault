@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 import os
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -16,26 +14,7 @@ from sqlalchemy import create_engine
 
 load_dotenv()
 
-DEFAULT_DOCKER_WORKDB = "/data/workdb.sqlite"
-
-
-def default_local_db_path(env_key: str, fallback: str) -> str:
-    value = os.getenv(env_key, "").strip()
-    if value:
-        return value
-    if fallback == "workdb.sqlite":
-        if Path(DEFAULT_DOCKER_WORKDB).exists():
-            return DEFAULT_DOCKER_WORKDB
-    return fallback
-
-
-DB_SOURCES_LOCAL = [
-    {"name": "weibo", "path": default_local_db_path("WORKDB_SQLITE_PATH", "workdb.sqlite")},
-    {"name": "xueqiu", "path": default_local_db_path("XUEQIU_SQLITE_PATH", "xueqiu_batch.sqlite3")},
-]
-
-DB_MODE = os.getenv("STREAMLIT_DB_MODE", "local").strip().lower()
-USE_TURSO = DB_MODE in {"cloud", "turso", "archive"}
+STREAMLIT_SOURCE_NAME = "archive"
 
 
 def parse_json_list(value: object) -> List[str]:
@@ -73,18 +52,6 @@ def action_group(action: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def load_sqlite_tables(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    try:
-        conn.execute("PRAGMA busy_timeout = 5000;")
-        posts = pd.read_sql_query("SELECT * FROM posts", conn)
-        assertions = pd.read_sql_query("SELECT * FROM assertions", conn)
-    finally:
-        conn.close()
-    return posts, assertions
-
-
-@st.cache_data(show_spinner=False)
 def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not db_url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
@@ -98,10 +65,11 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
         future=True,
     )
     posts_query = """
-        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-               final_status AS status, invest_score, processed_at, model, prompt_version
-        FROM posts
-    """
+	        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+	               final_status AS status, invest_score, processed_at, model, prompt_version
+	        FROM posts
+	        WHERE processed_at IS NOT NULL
+	    """
     assertions_query = "SELECT * FROM assertions"
     posts = pd.read_sql_query(posts_query, engine)
     assertions = pd.read_sql_query(assertions_query, engine)
@@ -109,37 +77,28 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
 
 
 def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    base = Path(__file__).resolve().parent
     posts_frames: List[pd.DataFrame] = []
     assertions_frames: List[pd.DataFrame] = []
     missing: List[str] = []
 
-    if USE_TURSO:
-        turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
-        turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
-        if not turso_url:
-            missing.append("TURSO_DATABASE_URL")
-        else:
-            posts, assertions = load_turso_tables(turso_url, turso_token)
-            posts = standardize_posts(posts, "archive")
-            posts = normalize_datetime_columns(posts)
-            assertions = standardize_assertions(assertions, posts, "archive")
-            assertions = normalize_assertions_datetime(assertions)
-            posts_frames.append(posts)
-            assertions_frames.append(assertions)
-    else:
-        for source in DB_SOURCES_LOCAL:
-            path = base / source["path"]
-            if not path.exists():
-                missing.append(source["path"])
-                continue
-            posts, assertions = load_sqlite_tables(str(path))
-            posts = standardize_posts(posts, source["name"])
-            posts = normalize_datetime_columns(posts)
-            assertions = standardize_assertions(assertions, posts, source["name"])
-            assertions = normalize_assertions_datetime(assertions)
-            posts_frames.append(posts)
-            assertions_frames.append(assertions)
+    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+    if not turso_url:
+        missing.append("TURSO_DATABASE_URL")
+        return pd.DataFrame(), pd.DataFrame(), missing
+
+    try:
+        posts, assertions = load_turso_tables(turso_url, turso_token)
+    except Exception as e:
+        missing.append(f"turso_connect_error:{type(e).__name__}")
+        return pd.DataFrame(), pd.DataFrame(), missing
+
+    posts = standardize_posts(posts, STREAMLIT_SOURCE_NAME)
+    posts = normalize_datetime_columns(posts)
+    assertions = standardize_assertions(assertions, posts, STREAMLIT_SOURCE_NAME)
+    assertions = normalize_assertions_datetime(assertions)
+    posts_frames.append(posts)
+    assertions_frames.append(assertions)
 
     if posts_frames:
         posts_all = pd.concat(posts_frames, ignore_index=True)
@@ -1010,11 +969,13 @@ def main() -> None:
     )
 
     posts, assertions, missing = load_sources()
-    if posts.empty:
-        st.error("未找到可用数据库，请检查 workdb.sqlite 或 xueqiu_batch.sqlite3。")
-        st.stop()
     if missing:
-        st.info(f"未找到：{', '.join(missing)}")
+        st.error("Turso 没配好，或者连不上。")
+        st.info(f"缺少/错误：{', '.join(missing)}")
+        st.stop()
+    if posts.empty:
+        st.warning("Turso 里还没有“已处理”的数据（processed_at 为空会被隐藏）。")
+        st.stop()
     posts = normalize_datetime_columns(posts)
     posts = enrich_posts(posts)
     assertions = normalize_assertions_datetime(assertions)

@@ -2,8 +2,8 @@ streamlit
 sqlalchemy
 sqlalchemy-libsql
 feedparser
-pytz
 supervisor
 requests
 python-dotenv
 litellm
+redis
