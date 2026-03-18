@@ -19,6 +19,9 @@ def ensure_turso_engine(url: str, token: str) -> Engine:
     return create_engine(
         f"sqlite+libsql://{turso_url}?secure=true",
         connect_args={"auth_token": token} if token else {},
+        # Avoid calling DBAPI rollback() on connection return.
+        # Some libsql builds may panic on rollback after transient failures.
+        pool_reset_on_return=None,
         future=True,
     )
 
@@ -80,4 +83,3 @@ def init_cloud_schema(engine: Engine) -> None:
         for stmt in idx_sql.strip().split(";\n"):
             if stmt.strip():
                 conn.execute(text(stmt))
-

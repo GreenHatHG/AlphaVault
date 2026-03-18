@@ -10,7 +10,8 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 import streamlit as st
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+
+from turso_db import ensure_turso_engine
 
 load_dotenv()
 
@@ -55,15 +56,7 @@ def action_group(action: str) -> str:
 def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not db_url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
-    if db_url.startswith("libsql://"):
-        turso_url = db_url[9:]
-    else:
-        turso_url = db_url
-    engine = create_engine(
-        f"sqlite+libsql://{turso_url}?secure=true",
-        connect_args={"auth_token": auth_token} if auth_token else {},
-        future=True,
-    )
+    engine = ensure_turso_engine(db_url, auth_token)
     posts_query = """
 	        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
 	               final_status AS status, invest_score, processed_at, model, prompt_version
