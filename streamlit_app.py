@@ -10,12 +10,24 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 import streamlit as st
 from dotenv import load_dotenv
+from sqlalchemy import text
 
 from turso_db import ensure_turso_engine
+from weibo_display import format_weibo_display_md
 
 load_dotenv()
 
 STREAMLIT_SOURCE_NAME = "archive"
+
+
+def turso_table_columns(engine, table: str) -> set[str]:
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    out: set[str] = set()
+    for row in rows:
+        if row and len(row) >= 2:
+            out.add(str(row[1]))
+    return out
 
 
 def parse_json_list(value: object) -> List[str]:
@@ -57,12 +69,16 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
     if not db_url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
     engine = ensure_turso_engine(db_url, auth_token)
+    post_cols = turso_table_columns(engine, "posts")
+    display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
     posts_query = """
 	        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+	               {display_expr},
 	               final_status AS status, invest_score, processed_at, model, prompt_version
 	        FROM posts
 	        WHERE processed_at IS NOT NULL
 	    """
+    posts_query = posts_query.format(display_expr=display_expr)
     assertions_query = "SELECT * FROM assertions"
     posts = pd.read_sql_query(posts_query, engine)
     assertions = pd.read_sql_query(assertions_query, engine)
@@ -169,6 +185,7 @@ def standardize_posts(posts: pd.DataFrame, source_name: str) -> pd.DataFrame:
         "created_at": "",
         "url": "",
         "raw_text": "",
+        "display_md": "",
         "status": "",
         "invest_score": 0.0,
         "processed_at": "",
@@ -226,6 +243,7 @@ def standardize_assertions(
         created_map = posts.set_index("post_uid")["created_at"]
         url_map = posts.set_index("post_uid")["url"]
         raw_map = posts.set_index("post_uid")["raw_text"]
+        display_map = posts.set_index("post_uid")["display_md"]
         status_map = posts.set_index("post_uid")["status"]
         score_map = posts.set_index("post_uid")["invest_score"]
 
@@ -233,11 +251,13 @@ def standardize_assertions(
         assertions.loc[missing_created, "created_at"] = assertions.loc[missing_created, "post_uid"].map(created_map)
         assertions["url"] = assertions["post_uid"].map(url_map)
         assertions["raw_text"] = assertions["post_uid"].map(raw_map)
+        assertions["display_md"] = assertions["post_uid"].map(display_map)
         assertions["status"] = assertions["post_uid"].map(status_map)
         assertions["invest_score"] = assertions["post_uid"].map(score_map)
     else:
         assertions["url"] = ""
         assertions["raw_text"] = ""
+        assertions["display_md"] = ""
         assertions["status"] = ""
         assertions["invest_score"] = 0.0
 
@@ -518,9 +538,10 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
     st.markdown("**最近交易流（按时间倒序）**")
     trade_view = trade_df.sort_values(by="created_at", ascending=False)
     show_raw_col = st.checkbox("表格展示原文（完整格式）", value=False)
+    raw_col = "display_md" if "display_md" in trade_view.columns else "raw_text"
     st.dataframe(
         (
-            trade_view.assign(原文=trade_view["raw_text"].fillna(""))[
+            trade_view.assign(原文=trade_view[raw_col].fillna(""))[
                 [
                     "created_at",
                     "author",
@@ -879,6 +900,30 @@ def show_tables(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame)
         width="stretch",
         hide_index=True,
     )
+
+    st.divider()
+    st.markdown("**帖子详情（格式化展示）**")
+    view_for_pick = view.dropna(subset=["post_uid"]).copy()
+    view_for_pick["pick_label"] = (
+        view_for_pick["created_at"].astype(str).fillna("")
+        + " · "
+        + view_for_pick["author"].astype(str).fillna("")
+        + " · "
+        + view_for_pick["post_uid"].astype(str).fillna("")
+    )
+    pick_options = view_for_pick["pick_label"].tolist()
+    if pick_options:
+        selected = st.selectbox("选择一条帖子", pick_options, index=0)
+        picked_row = view_for_pick[view_for_pick["pick_label"] == selected].head(1)
+        if not picked_row.empty:
+            row = picked_row.iloc[0]
+            raw_text = str(row.get("raw_text") or "")
+            author = str(row.get("author") or "")
+            display_md = str(row.get("display_md") or "")
+            if not display_md.strip():
+                display_md = format_weibo_display_md(raw_text, author=author)
+            st.caption(f"{row.get('created_at', '')} · {row.get('url', '')}")
+            st.markdown(display_md, unsafe_allow_html=True)
 
     st.markdown("**观点列表**")
     if assertions_filtered.empty:

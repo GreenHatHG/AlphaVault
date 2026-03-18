@@ -55,6 +55,7 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
     init_cloud_schema(engine)
 
     extra_columns: list[tuple[str, str]] = [
+        ("display_md", "display_md TEXT"),
         ("ai_status", "ai_status TEXT NOT NULL DEFAULT 'done'"),
         ("ai_retry_count", "ai_retry_count INTEGER NOT NULL DEFAULT 0"),
         ("ai_next_retry_at", "ai_next_retry_at INTEGER"),
@@ -108,6 +109,7 @@ def upsert_pending_post(
     created_at: str,
     url: str,
     raw_text: str,
+    display_md: str,
     archived_at: str,
     ingested_at: int,
 ) -> None:
@@ -122,12 +124,12 @@ def upsert_pending_post(
             text(
                 """
                 INSERT INTO posts (
-                    post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+                    post_uid, platform, platform_post_id, author, created_at, url, raw_text, display_md,
                     final_status, invest_score, processed_at, model, prompt_version, archived_at,
                     ai_status, ai_retry_count, ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
                     ingested_at
                 ) VALUES (
-                    :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
+                    :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md,
                     :final_status, NULL, NULL, NULL, NULL, :archived_at,
                     :ai_status, 0, NULL, NULL, NULL, NULL,
                     :ingested_at
@@ -139,6 +141,7 @@ def upsert_pending_post(
                     created_at=excluded.created_at,
                     url=excluded.url,
                     raw_text=excluded.raw_text,
+                    display_md=excluded.display_md,
                     archived_at=excluded.archived_at,
                     ingested_at=excluded.ingested_at
                 WHERE posts.processed_at IS NULL
@@ -152,6 +155,7 @@ def upsert_pending_post(
                 "created_at": created_at,
                 "url": url,
                 "raw_text": raw_text,
+                "display_md": display_md,
                 "final_status": "irrelevant",
                 "archived_at": archived_at,
                 "ai_status": AI_STATUS_PENDING,
