@@ -288,7 +288,7 @@ def parse_active_hours(value: str) -> Optional[tuple[int, int]]:
     v = str(value or "").strip()
     if not v:
         return None
-    match = re.fullmatch(r"(\\d{1,2})\\s*-\\s*(\\d{1,2})", v)
+    match = re.fullmatch(r"(\d{1,2})\s*-\s*(\d{1,2})", v)
     if not match:
         raise ValueError("invalid_active_hours_format")
     start = int(match.group(1))
@@ -353,4 +353,3 @@ def build_row_meta(
     if bid:
         row["bid"] = bid
     return row
-
