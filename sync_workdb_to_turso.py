@@ -10,8 +10,22 @@ from typing import Iterable, Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from init_workdb import init_workdb
+
 
 CST = timezone(timedelta(hours=8))
+
+SQLITE_CONNECT_TIMEOUT_SEC = 30.0
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def connect_workdb(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=SQLITE_CONNECT_TIMEOUT_SEC)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    return conn
 
 
 @dataclass
@@ -24,6 +38,59 @@ class SyncStats:
 
 def now_str() -> str:
     return datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_active_hours(value: str) -> Optional[tuple[int, int]]:
+    v = str(value or "").strip()
+    if not v:
+        return None
+    parts = v.split("-", 1)
+    if len(parts) != 2:
+        raise ValueError("invalid_active_hours_format")
+    start_str, end_str = parts[0].strip(), parts[1].strip()
+    if not start_str.isdigit() or not end_str.isdigit():
+        raise ValueError("invalid_active_hours_format")
+    start = int(start_str)
+    end = int(end_str)
+    if start < 0 or start > 23 or end < 0 or end > 23:
+        raise ValueError("invalid_active_hours_range")
+    return start, end
+
+
+def in_active_hours(now_dt: datetime, active_hours: tuple[int, int]) -> bool:
+    start, end = active_hours
+    hour = now_dt.hour
+    if start <= end:
+        return start <= hour <= end
+    return hour >= start or hour <= end
+
+
+def sleep_until_active(active_hours: tuple[int, int], *, verbose: bool) -> None:
+    now_dt = datetime.now(CST)
+    if in_active_hours(now_dt, active_hours):
+        return
+    start_hour, end_hour = active_hours
+    today_start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+
+    if start_hour <= end_hour:
+        if now_dt.hour < start_hour:
+            next_dt = today_start
+        else:
+            next_dt = today_start + timedelta(days=1)
+    else:
+        if now_dt.hour < start_hour and now_dt.hour > end_hour:
+            next_dt = today_start
+        else:
+            next_dt = today_start
+
+    sleep_sec = max(1.0, (next_dt - now_dt).total_seconds())
+    if verbose:
+        print(
+            f"[schedule] inactive now={now_dt.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"active={start_hour}-{end_hour} sleep={int(sleep_sec)}s",
+            flush=True,
+        )
+    time.sleep(sleep_sec)
 
 
 def ensure_turso_engine(url: str, token: str) -> Engine:
@@ -230,9 +297,7 @@ def mark_sync_success(conn: sqlite3.Connection, post_uid: str, attempts: int) ->
 
 def mark_sync_error(conn: sqlite3.Connection, post_uid: str, attempts: int, error: str) -> None:
     retry_minutes = min(60, 2 ** min(attempts, 6))
-    next_retry = (datetime.now(timezone.utc) + timedelta(minutes=retry_minutes)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    next_retry = (datetime.now(CST) + timedelta(minutes=retry_minutes)).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         """
         UPDATE posts
@@ -246,6 +311,31 @@ def mark_sync_error(conn: sqlite3.Connection, post_uid: str, attempts: int, erro
     )
 
 
+def mark_connect_error_for_pending_posts(
+    *,
+    local_db: Path,
+    batch_size: int,
+    error: str,
+    verbose: bool,
+) -> int:
+    updated = 0
+    conn = connect_workdb(local_db)
+    try:
+        rows = list(select_pending_posts(conn, max(1, int(batch_size))))
+        if not rows:
+            return 0
+        for row in rows:
+            attempts = int(row["sync_attempts"] or 0) + 1
+            mark_sync_error(conn, row["post_uid"], attempts, error)
+            updated += 1
+        conn.commit()
+        if updated and verbose:
+            print(f"[sync] marked_connect_error={updated}", flush=True)
+        return updated
+    finally:
+        conn.close()
+
+
 def sync_once(
     *,
     local_db: Path,
@@ -254,8 +344,7 @@ def sync_once(
     verbose: bool,
 ) -> SyncStats:
     stats = SyncStats()
-    conn = sqlite3.connect(local_db)
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn = connect_workdb(local_db)
     try:
         rows = list(select_pending_posts(conn, batch_size))
         if not rows:
@@ -276,7 +365,7 @@ def sync_once(
                 if verbose:
                     print(f"[sync] ok {row['post_uid']}", flush=True)
             except Exception as e:
-                mark_sync_error(conn, row["post_uid"], attempts, f"{type(e).__name__}: {e}")
+                mark_sync_error(conn, row["post_uid"], attempts, f"turso:{type(e).__name__}: {e}")
                 conn.commit()
                 stats.failed += 1
                 if verbose:
@@ -293,22 +382,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--turso-token", default=os.getenv("TURSO_AUTH_TOKEN", ""), help="Turso Auth Token")
     parser.add_argument("--batch-size", type=int, default=200, help="每次同步条数")
     parser.add_argument("--interval-seconds", type=float, default=0.0, help="循环间隔（0=只跑一次）")
+    parser.add_argument(
+        "--active-hours",
+        default="",
+        help="只在这些小时运行（CST），格式: 6-22；为空表示全天。",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    engine = ensure_turso_engine(args.turso_url, args.turso_token)
-    init_cloud_schema(engine)
+    init_workdb(Path(args.local_db))
+
+    active_hours_value = args.active_hours.strip() if args.active_hours else os.getenv("SYNC_ACTIVE_HOURS", "").strip()
+    active_hours: Optional[tuple[int, int]] = None
+    if active_hours_value:
+        try:
+            active_hours = parse_active_hours(active_hours_value)
+        except ValueError as e:
+            raise RuntimeError(f"Invalid active hours: {active_hours_value} ({e})") from e
+
+    local_db = Path(args.local_db)
+    interval = float(args.interval_seconds or 0.0)
+    if interval > 0:
+        interval = max(1.0, interval)
+
+    engine: Optional[Engine] = None
+
+    def _ensure_engine() -> Optional[Engine]:
+        nonlocal engine
+        if engine is not None:
+            return engine
+        try:
+            engine = ensure_turso_engine(args.turso_url, args.turso_token)
+            init_cloud_schema(engine)
+            return engine
+        except Exception as e:
+            engine = None
+            error = f"turso:connect:{type(e).__name__}: {e}"
+            try:
+                mark_connect_error_for_pending_posts(
+                    local_db=local_db,
+                    batch_size=max(1, int(args.batch_size)),
+                    error=error,
+                    verbose=bool(args.verbose),
+                )
+            except Exception as mark_e:
+                print(f"[sync] mark_connect_error_failed {type(mark_e).__name__}: {mark_e}", flush=True)
+            if args.verbose:
+                print(f"[sync] connect_error {type(e).__name__}: {e}", flush=True)
+            return None
 
     if args.interval_seconds and args.interval_seconds > 0:
         loop_idx = 0
         try:
             while True:
                 loop_idx += 1
+                if active_hours is not None:
+                    sleep_until_active(active_hours, verbose=bool(args.verbose))
+                if _ensure_engine() is None:
+                    time.sleep(interval)
+                    continue
                 stats = sync_once(
-                    local_db=Path(args.local_db),
+                    local_db=local_db,
                     engine=engine,
                     batch_size=max(1, int(args.batch_size)),
                     verbose=bool(args.verbose),
@@ -320,12 +457,16 @@ def main() -> None:
                         ),
                         flush=True,
                     )
-                time.sleep(max(1.0, float(args.interval_seconds)))
+                time.sleep(interval)
         except KeyboardInterrupt:
             print("[sync] stopped by user", flush=True)
     else:
+        if active_hours is not None:
+            sleep_until_active(active_hours, verbose=bool(args.verbose))
+        if _ensure_engine() is None:
+            raise RuntimeError("turso_connect_failed")
         stats = sync_once(
-            local_db=Path(args.local_db),
+            local_db=local_db,
             engine=engine,
             batch_size=max(1, int(args.batch_size)),
             verbose=bool(args.verbose),

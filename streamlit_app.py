@@ -16,10 +16,22 @@ from sqlalchemy import create_engine
 
 load_dotenv()
 
+DEFAULT_DOCKER_WORKDB = "/data/workdb.sqlite"
+
+
+def default_local_db_path(env_key: str, fallback: str) -> str:
+    value = os.getenv(env_key, "").strip()
+    if value:
+        return value
+    if fallback == "workdb.sqlite":
+        if Path(DEFAULT_DOCKER_WORKDB).exists():
+            return DEFAULT_DOCKER_WORKDB
+    return fallback
+
 
 DB_SOURCES_LOCAL = [
-    {"name": "weibo", "path": "workdb.sqlite"},
-    {"name": "xueqiu", "path": "xueqiu_batch.sqlite3"},
+    {"name": "weibo", "path": default_local_db_path("WORKDB_SQLITE_PATH", "workdb.sqlite")},
+    {"name": "xueqiu", "path": default_local_db_path("XUEQIU_SQLITE_PATH", "xueqiu_batch.sqlite3")},
 ]
 
 DB_MODE = os.getenv("STREAMLIT_DB_MODE", "local").strip().lower()
@@ -62,8 +74,9 @@ def action_group(action: str) -> str:
 
 @st.cache_data(show_spinner=False)
 def load_sqlite_tables(db_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     try:
+        conn.execute("PRAGMA busy_timeout = 5000;")
         posts = pd.read_sql_query("SELECT * FROM posts", conn)
         assertions = pd.read_sql_query("SELECT * FROM assertions", conn)
     finally:
