@@ -18,7 +18,7 @@ DEFAULT_PROMPT_VERSION = os.getenv("AI_PROMPT_VERSION", "weibo_assertions_v1")
 
 DEFAULT_AI_MODE = os.getenv("AI_API_MODE", AI_MODE_RESPONSES)
 DEFAULT_AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.1"))
-DEFAULT_AI_RETRY_COUNT = int(os.getenv("AI_RETRIES", "3"))
+DEFAULT_AI_RETRY_COUNT = int(os.getenv("AI_RETRIES", "11"))
 DEFAULT_AI_RETRY_BACKOFF_SEC = 2.0
 DEFAULT_AI_RETRY_MAX_BACKOFF_SEC = 32.0
 DEFAULT_AI_REASONING_EFFORT = os.getenv("AI_REASONING_EFFORT", "xhigh")
@@ -412,7 +412,7 @@ def analyze_with_litellm(
     ai_temperature: float,
     ai_reasoning_effort: str,
     trace_out: Optional[Path],
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 1000.0,
 ) -> AnalyzeResult:
     base_url = (base_url or "").rstrip("/")
     prompt = f"""

@@ -409,9 +409,11 @@ def _flush_spool_to_turso(
 
 def _build_config(args: argparse.Namespace) -> LLMConfig:
     ai_stream_env = env_bool("AI_STREAM")
-    ai_stream = bool(args.ai_stream)
+    ai_stream = True
     if ai_stream_env is not None:
         ai_stream = bool(ai_stream_env)
+    elif args.ai_stream:
+        ai_stream = True
 
     trace_out = args.trace_out
     trace_out_env = os.getenv("AI_TRACE_OUT", "").strip()
@@ -664,6 +666,11 @@ def _ingest_rss_many_once(
 
 
 def parse_args() -> argparse.Namespace:
+    ai_retries_env = env_int("AI_RETRIES")
+    ai_rpm_env = env_float("AI_RPM")
+    ai_timeout_env = env_float("AI_TIMEOUT_SEC")
+    ai_max_inflight_env = env_int("AI_MAX_INFLIGHT")
+
     parser = argparse.ArgumentParser(description="Weibo RSS -> Turso queue -> AI -> Turso")
     parser.add_argument("--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）")
     parser.add_argument("--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）")
@@ -683,12 +690,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-mode", default=os.getenv("AI_API_MODE", DEFAULT_AI_MODE), choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES])
     parser.add_argument("--ai-stream", action="store_true")
     parser.add_argument("--prompt-version", default=os.getenv("AI_PROMPT_VERSION", DEFAULT_PROMPT_VERSION))
-    parser.add_argument("--ai-retries", type=int, default=env_int("AI_RETRIES") or DEFAULT_AI_RETRY_COUNT)
+    parser.add_argument(
+        "--ai-retries",
+        type=int,
+        default=ai_retries_env if ai_retries_env is not None else DEFAULT_AI_RETRY_COUNT,
+    )
     parser.add_argument("--ai-temperature", type=float, default=float(os.getenv("AI_TEMPERATURE", str(DEFAULT_AI_TEMPERATURE))))
     parser.add_argument("--ai-reasoning-effort", default=os.getenv("AI_REASONING_EFFORT", DEFAULT_AI_REASONING_EFFORT), choices=["none", "minimal", "low", "medium", "high", "xhigh"])
-    parser.add_argument("--ai-rpm", type=float, default=env_float("AI_RPM") or 0.0)
-    parser.add_argument("--ai-timeout-sec", type=float, default=env_float("AI_TIMEOUT_SEC") or 60.0)
-    parser.add_argument("--ai-max-inflight", type=int, default=env_int("AI_MAX_INFLIGHT") or 0)
+    parser.add_argument(
+        "--ai-rpm",
+        type=float,
+        default=ai_rpm_env if ai_rpm_env is not None else 12.0,
+    )
+    parser.add_argument(
+        "--ai-timeout-sec",
+        type=float,
+        default=ai_timeout_env if ai_timeout_env is not None else 1000.0,
+    )
+    parser.add_argument(
+        "--ai-max-inflight",
+        type=int,
+        default=ai_max_inflight_env if ai_max_inflight_env is not None else 12,
+    )
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument("--relevant-threshold", type=float, default=0.35, help="相关度阈值")
     parser.add_argument("--verbose", action="store_true")
