@@ -35,7 +35,9 @@ export RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY,https://r
 	export TURSO_AUTH_TOKEN="YOUR_TOKEN"
 
 	export AI_MODEL="openai/gpt-5.2"
+  # 注意：AI_MODEL 要是“真实模型名”，不要写成 rss 这类占位词
 	export AI_BASE_URL="http://localhost:3001/proxy/gpt5-2/v1"
+  # 注意：AI_BASE_URL 要指向 OpenAI 兼容接口（一般以 /v1 结尾），不要填网关首页/网页（会返回 HTML）
 	export AI_API_KEY="YOUR_KEY"
 	export AI_API_MODE="responses"
 	export AI_STREAM="1"
