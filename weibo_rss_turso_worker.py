@@ -34,6 +34,7 @@ from ai_analyze import (
     AnalyzeResult,
     analyze_with_litellm,
     clean_text,
+    format_llm_error_one_line,
     validate_and_adjust_assertions,
 )
 from rss_utils import (
@@ -434,6 +435,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         trace_out = Path(trace_out_env)
 
     base_url = str(args.base_url or "").strip()
+    if bool(args.verbose) and base_url:
+        if not base_url.rstrip("/").endswith("/v1"):
+            print(f"[ai] warn base_url_maybe_missing_v1 base_url={base_url}", flush=True)
 
     api_key = ""
     if args.api_key:
@@ -539,7 +543,17 @@ def _process_one_post_uid(
             assertions=assertions,
             )
     except Exception as e:
-        msg = f"ai:{type(e).__name__}: {e}"
+        base_url_for_log = (config.base_url or "").strip()
+        if base_url_for_log:
+            base_url_for_log = base_url_for_log.split("?", 1)[0].split("#", 1)[0]
+            base_url_for_log = base_url_for_log[:220]
+        ctx = (
+            f" cfg_model={config.model}"
+            f" api_mode={config.api_mode}"
+            f" stream={1 if config.ai_stream else 0}"
+            f" base_url={base_url_for_log or '(empty)'}"
+        )
+        msg = f"ai:{format_llm_error_one_line(e, limit=700)}{ctx}"
         now_epoch = int(time.time())
         retry_count = 1
         try:
@@ -552,7 +566,7 @@ def _process_one_post_uid(
         except Exception as mark_e:
             if config.verbose:
                 print(f"[llm] mark_error_failed {post_uid} {type(mark_e).__name__}: {mark_e}", flush=True)
-        print(f"[llm] error {post_uid} {type(e).__name__}: {e}", flush=True)
+        print(f"[llm] error {post_uid} {msg}", flush=True)
 
 
 def _ingest_rss_many_once(

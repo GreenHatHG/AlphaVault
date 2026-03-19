@@ -8,6 +8,10 @@ from sqlalchemy.engine import Engine
 # NOTE: This module is extracted from the old local-sqlite sync scripts.
 # It keeps only Turso engine creation + base schema (posts/assertions).
 
+TOPIC_CLUSTERS_TABLE = "topic_clusters"
+TOPIC_CLUSTER_TOPICS_TABLE = "topic_cluster_topics"
+TOPIC_CLUSTER_POST_OVERRIDES_TABLE = "topic_cluster_post_overrides"
+
 
 def ensure_turso_engine(url: str, token: str) -> Engine:
     if not url:
@@ -32,6 +36,55 @@ def get_turso_engine_from_env() -> Engine:
     if not url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
     return ensure_turso_engine(url, token)
+
+
+def init_topic_cluster_schema(engine: Engine) -> None:
+    """
+    Create optional topic cluster tables.
+
+    This is intentionally additive (CREATE TABLE IF NOT EXISTS) so it won't break
+    existing deployments.
+    """
+    ddl_clusters = f"""
+    CREATE TABLE IF NOT EXISTS {TOPIC_CLUSTERS_TABLE} (
+        cluster_key TEXT PRIMARY KEY,
+        cluster_name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """
+    ddl_topics = f"""
+    CREATE TABLE IF NOT EXISTS {TOPIC_CLUSTER_TOPICS_TABLE} (
+        topic_key TEXT PRIMARY KEY,
+        cluster_key TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+        created_at TEXT NOT NULL
+    );
+    """
+    ddl_overrides = f"""
+    CREATE TABLE IF NOT EXISTS {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} (
+        post_uid TEXT PRIMARY KEY,
+        cluster_key TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+        created_at TEXT NOT NULL
+    );
+    """
+    idx_sql = f"""
+    CREATE INDEX IF NOT EXISTS idx_{TOPIC_CLUSTER_TOPICS_TABLE}_cluster_key
+        ON {TOPIC_CLUSTER_TOPICS_TABLE}(cluster_key);
+    CREATE INDEX IF NOT EXISTS idx_{TOPIC_CLUSTER_POST_OVERRIDES_TABLE}_cluster_key
+        ON {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}(cluster_key);
+    """
+    with engine.begin() as conn:
+        conn.execute(text(ddl_clusters))
+        conn.execute(text(ddl_topics))
+        conn.execute(text(ddl_overrides))
+        for stmt in idx_sql.strip().split(";\n"):
+            if stmt.strip():
+                conn.execute(text(stmt))
 
 
 def init_cloud_schema(engine: Engine) -> None:
@@ -83,3 +136,5 @@ def init_cloud_schema(engine: Engine) -> None:
         for stmt in idx_sql.strip().split(";\n"):
             if stmt.strip():
                 conn.execute(text(stmt))
+
+    init_topic_cluster_schema(engine)
