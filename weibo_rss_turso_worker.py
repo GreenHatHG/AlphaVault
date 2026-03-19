@@ -68,6 +68,7 @@ from turso_queue import (
     upsert_pending_post,
     write_assertions_and_mark_done,
 )
+from weibo_display import extract_image_urls_from_html, format_weibo_display_md
 
 
 DEFAULT_SPOOL_DIR = "/tmp/alphavault-spool"
@@ -323,6 +324,11 @@ def _flush_redis_to_turso(
             continue
 
         try:
+            raw_text = str(payload.get("raw_text") or "")
+            author = str(payload.get("author") or "")
+            display_md = str(payload.get("display_md") or "")
+            if not display_md.strip():
+                display_md = format_weibo_display_md(raw_text, author=author)
             upsert_pending_post(
                 engine,
                 post_uid=post_uid,
@@ -331,7 +337,8 @@ def _flush_redis_to_turso(
                 author=str(payload.get("author") or ""),
                 created_at=str(payload.get("created_at") or now_str()),
                 url=str(payload.get("url") or ""),
-                raw_text=str(payload.get("raw_text") or ""),
+                raw_text=raw_text,
+                display_md=display_md,
                 archived_at=now_str(),
                 ingested_at=int(payload.get("ingested_at") or int(time.time())),
             )
@@ -383,6 +390,11 @@ def _flush_spool_to_turso(
             continue
 
         try:
+            raw_text = str(payload.get("raw_text") or "")
+            author = str(payload.get("author") or "")
+            display_md = str(payload.get("display_md") or "")
+            if not display_md.strip():
+                display_md = format_weibo_display_md(raw_text, author=author)
             upsert_pending_post(
                 engine,
                 post_uid=post_uid,
@@ -391,7 +403,8 @@ def _flush_spool_to_turso(
                 author=str(payload.get("author") or ""),
                 created_at=str(payload.get("created_at") or now_str()),
                 url=str(payload.get("url") or ""),
-                raw_text=str(payload.get("raw_text") or ""),
+                raw_text=raw_text,
+                display_md=display_md,
                 archived_at=now_str(),
                 ingested_at=int(payload.get("ingested_at") or int(time.time())),
             )
@@ -602,6 +615,7 @@ def _ingest_rss_many_once(
             title = clean_text(entry.get("title") or "")
             content_html = get_entry_content(entry)
             content_text = html_to_text(content_html)
+            image_urls = extract_image_urls_from_html(content_html)
 
             if title and content_text and title not in content_text:
                 raw_text = f"{title}\n\n{content_text}"
@@ -613,6 +627,7 @@ def _ingest_rss_many_once(
 
             created_at = parse_datetime(entry)
             resolved_author = choose_author(entry, feed, author)
+            display_md = format_weibo_display_md(raw_text, author=resolved_author, image_urls=image_urls)
 
             payload: Dict[str, Any] = {
                 "post_uid": post_uid,
@@ -622,6 +637,7 @@ def _ingest_rss_many_once(
                 "created_at": created_at,
                 "url": link,
                 "raw_text": raw_text,
+                "display_md": display_md,
                 "ingested_at": int(time.time()),
             }
 
@@ -652,6 +668,7 @@ def _ingest_rss_many_once(
                     created_at=created_at,
                     url=link,
                     raw_text=raw_text,
+                    display_md=display_md,
                     archived_at=now_str(),
                     ingested_at=int(payload["ingested_at"]),
                 )
