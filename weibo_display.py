@@ -422,7 +422,7 @@ def format_weibo_display_md(
     blocks: List[str] = []
     for seg in expanded_segments:
         speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
-        text = normalize_weibo_text(seg.text or "")
+        text = _format_markdown_text(normalize_weibo_text(seg.text or ""))
         if not text:
             continue
 
@@ -438,6 +438,23 @@ def format_weibo_display_md(
         blocks[-1] = blocks[-1].rstrip() + "\n" + "\n".join(img_lines)
 
     return SEGMENT_SEPARATOR.join(blocks).strip()
+
+
+def _format_markdown_text(text: str) -> str:
+    """
+    Preserve author-intended line breaks inside Markdown by converting single
+    newlines to hard breaks, while keeping paragraph breaks.
+    """
+    value = str(text or "")
+    if "\n" not in value:
+        return value
+
+    paragraphs = value.split("\n\n")
+    formatted: List[str] = []
+    for para in paragraphs:
+        lines = para.split("\n")
+        formatted.append("  \n".join(lines))
+    return "\n\n".join(formatted)
 
 
 def _extract_repost(text: str) -> Optional[tuple[str, str, str]]:
