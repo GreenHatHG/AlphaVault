@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import html
 import re
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ QUOTE_MARKER = "//@"
 SEGMENT_SEPARATOR = "\n\n---\n\n"
 DEFAULT_UNKNOWN_AUTHOR = "未知"
 IMG_LINE_TEMPLATE = '<img class="ke_img" src="{url}" />'
+CSV_RAW_FIELD_MARKER = "[CSV原始字段]"
+WEIBO_META_SECTION_HEADER = "[微博元信息]"
+WEIBO_REPOST_ORIGINAL_SECTION_HEADER = "[转发原文]"
 
 _RE_REPLY_PREFIX = re.compile(r"^\s*回复@[^:：\s]+[:：]\s*")
 _RE_TRAILING_DASH = re.compile(r"[\s\-–—]+$")
@@ -21,6 +25,8 @@ _RE_REPOST_MARKER = re.compile(
     r"(?:^|[\s\n])(?:-\s*)?转发\s*@(?P<nick>[^:：\s]+)\s*[:：]\s*",
     re.MULTILINE,
 )
+_RE_BLANK_LINE_SPLIT = re.compile(r"\n\s*\n+")
+_RE_KNOWN_SECTION_HEADER_LINE = re.compile(r"(?m)^\s*\[(?:CSV原始字段|微博元信息|转发原文)\]\s*$")
 
 
 def normalize_weibo_text(text: str) -> str:
@@ -44,6 +50,11 @@ def _strip_reply_prefix(text: str) -> str:
     return _RE_REPLY_PREFIX.sub("", (text or "").strip()).strip()
 
 
+def _collapse_whitespace_key(text: str) -> str:
+    normalized = normalize_weibo_text(text)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _split_nick_and_text(value: str) -> tuple[str, str]:
     """
     Parse "昵称:内容" or "昵称：内容".
@@ -62,6 +73,214 @@ def _split_nick_and_text(value: str) -> tuple[str, str]:
     return "", raw
 
 
+def _find_json_object_end(text: str, *, start_idx: int) -> int:
+    """
+    Return the position right after the matched JSON object, or -1 when not found.
+    This is a small brace matcher that ignores braces inside JSON strings.
+    """
+    if start_idx < 0 or start_idx >= len(text) or text[start_idx] != "{":
+        return -1
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start_idx, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return idx + 1
+
+    return -1
+
+
+def _extract_section_blocks(text: str, *, header: str) -> tuple[List[str], str]:
+    """
+    Extract all blocks after a section header line.
+
+    Example:
+      "[转发原文]\\nAAA\\nBBB\\n\\n[CSV原始字段]\\n{...}"
+    Returns:
+      (["AAA\\nBBB"], remaining_text_without_that_section)
+    """
+    value = str(text or "")
+    if not value:
+        return [], value
+
+    header_re = re.compile(rf"(?m)^\s*{re.escape(header)}\s*$")
+    blocks: List[str] = []
+
+    while True:
+        match = header_re.search(value)
+        if not match:
+            break
+
+        header_line_end = value.find("\n", match.end())
+        if header_line_end < 0:
+            value = value[: match.start()]
+            break
+        content_start = header_line_end + 1
+
+        next_header = _RE_KNOWN_SECTION_HEADER_LINE.search(value, pos=content_start)
+        block_end = next_header.start() if next_header else len(value)
+
+        block = value[content_start:block_end].strip()
+        if block:
+            blocks.append(block)
+
+        value = value[: match.start()] + value[block_end:]
+
+    return blocks, value
+
+
+def _strip_section_blocks(text: str, *, header: str) -> str:
+    _blocks, remaining = _extract_section_blocks(text, header=header)
+    return remaining
+
+
+def _extract_csv_source_nick(raw_text: str) -> str:
+    """
+    Extract "源用户昵称" from the "[CSV原始字段]" JSON block (if present).
+    Used only for display attribution; the CSV block itself is still removed from display_md.
+    """
+    text = str(raw_text or "")
+    if not text:
+        return ""
+
+    search_from = 0
+    while True:
+        marker_idx = text.find(CSV_RAW_FIELD_MARKER, search_from)
+        if marker_idx < 0:
+            return ""
+
+        marker_line_end = text.find("\n", marker_idx)
+        marker_line_end = len(text) if marker_line_end < 0 else marker_line_end + 1
+
+        scan = marker_line_end
+        while scan < len(text) and text[scan] in {" ", "\t", "\r", "\n"}:
+            scan += 1
+        if scan >= len(text) or text[scan] != "{":
+            search_from = marker_line_end
+            continue
+
+        json_start = scan
+        json_end = _find_json_object_end(text, start_idx=json_start)
+        if json_end < 0:
+            search_from = marker_line_end
+            continue
+
+        try:
+            payload = json.loads(text[json_start:json_end])
+        except Exception:
+            search_from = json_end
+            continue
+
+        if isinstance(payload, dict):
+            nick = payload.get("源用户昵称")
+            if nick:
+                return str(nick).strip()
+
+        search_from = json_end
+
+
+def _strip_csv_raw_field_blocks(raw_text: str) -> str:
+    """
+    Remove the "[CSV原始字段]" blocks and the following JSON object (maybe multi-line),
+    so they won't show up in display_md.
+
+    Handles:
+      "[CSV原始字段]\\n{...}"
+      "昵称：[CSV原始字段]\\n{...}"
+    """
+    text = str(raw_text or "")
+    if not text:
+        return ""
+
+    while True:
+        marker_idx = text.find(CSV_RAW_FIELD_MARKER)
+        if marker_idx < 0:
+            return text
+
+        line_start = text.rfind("\n", 0, marker_idx)
+        line_start = 0 if line_start < 0 else line_start + 1
+
+        marker_line_end = text.find("\n", marker_idx)
+        marker_line_end = len(text) if marker_line_end < 0 else marker_line_end + 1
+
+        # Prefer the JSON object right after the marker line (usually next line).
+        brace_start = -1
+        scan = marker_line_end
+        while scan < len(text) and text[scan] in {" ", "\t", "\r", "\n"}:
+            scan += 1
+        if scan < len(text) and text[scan] == "{":
+            brace_start = scan
+
+        # Also handle: "...[CSV原始字段]{...}" on the same line.
+        if brace_start < 0:
+            scan = marker_idx + len(CSV_RAW_FIELD_MARKER)
+            while scan < len(text) and scan < marker_line_end and text[scan] in {" ", "\t"}:
+                scan += 1
+            if scan < len(text) and scan < marker_line_end and text[scan] == "{":
+                brace_start = scan
+
+        removal_end = marker_line_end
+        if brace_start >= 0:
+            brace_end = _find_json_object_end(text, start_idx=brace_start)
+            if brace_end >= 0:
+                json_line_end = text.find("\n", brace_end)
+                removal_end = len(text) if json_line_end < 0 else json_line_end + 1
+
+        text = text[:line_start] + text[removal_end:]
+
+
+def _collapse_duplicate_rss_title_and_content(raw_text: str) -> str:
+    """
+    Some RSS feeds put the same text in both entry.title and entry.content/summary.
+    Our worker may concatenate them with a blank line, which can break the //@ parsing.
+
+    If there are exactly 2 blocks separated by blank lines, and after normalization one
+    block contains the other (or equals), keep the longer block only.
+    """
+    raw = str(raw_text or "").strip()
+    if not raw:
+        return ""
+
+    blocks = [b.strip() for b in _RE_BLANK_LINE_SPLIT.split(raw) if str(b or "").strip()]
+    if len(blocks) != 2:
+        return raw
+
+    first, second = blocks
+    norm_first = _collapse_whitespace_key(first)
+    norm_second = _collapse_whitespace_key(second)
+    if not norm_first or not norm_second:
+        return raw
+
+    if norm_first == norm_second:
+        return second if len(second) >= len(first) else first
+    if norm_first in norm_second:
+        return second
+    if norm_second in norm_first:
+        return first
+    return raw
+
+
 def parse_weibo_reply_chain(raw_text: str, *, default_author: str) -> List[WeiboDisplaySegment]:
     """
     Convert a Weibo-style reply/repost chain to ordered segments (oldest -> newest).
@@ -71,8 +290,19 @@ def parse_weibo_reply_chain(raw_text: str, *, default_author: str) -> List[Weibo
     Output order:
       B -> A -> default_author
     """
-    text = normalize_weibo_text(raw_text)
+    raw = str(raw_text or "")
+    repost_blocks, remaining = _extract_section_blocks(raw, header=WEIBO_REPOST_ORIGINAL_SECTION_HEADER)
+    repost_original_text = normalize_weibo_text("\n\n".join(repost_blocks))
+    repost_original_author = _extract_csv_source_nick(raw) if repost_original_text else ""
+
+    remaining = _strip_section_blocks(remaining, header=WEIBO_META_SECTION_HEADER)
+    remaining = _strip_csv_raw_field_blocks(remaining)
+    deduped = _collapse_duplicate_rss_title_and_content(remaining)
+    text = normalize_weibo_text(deduped)
     if not text:
+        if repost_original_text:
+            speaker = repost_original_author or (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
+            return [WeiboDisplaySegment(speaker=speaker, text=repost_original_text, is_current=True)]
         return []
 
     parts = text.split(QUOTE_MARKER)
@@ -104,6 +334,17 @@ def parse_weibo_reply_chain(raw_text: str, *, default_author: str) -> List[Weibo
     if not ordered and text:
         speaker = (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
         ordered.append(WeiboDisplaySegment(speaker=speaker, text=text, is_current=True))
+
+    if repost_original_text:
+        speaker = repost_original_author or (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
+        if not ordered:
+            ordered.insert(0, WeiboDisplaySegment(speaker=speaker, text=repost_original_text, is_current=True))
+        else:
+            first_key = _collapse_whitespace_key(ordered[0].text)
+            repost_key = _collapse_whitespace_key(repost_original_text)
+            if repost_key and first_key and repost_key == first_key:
+                return ordered
+            ordered.insert(0, WeiboDisplaySegment(speaker=speaker, text=repost_original_text, is_current=False))
 
     return ordered
 
