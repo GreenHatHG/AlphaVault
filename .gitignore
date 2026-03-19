@@ -31,3 +31,4 @@ weibo1/
 
 # Trace files
 trace.txt
+.ace-tool/
