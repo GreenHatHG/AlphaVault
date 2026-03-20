@@ -7,14 +7,22 @@ This module groups the smaller tabs to keep files under control.
 """
 
 from datetime import datetime, timedelta
+import math
 
 import pandas as pd
 import streamlit as st
 
+from alphavault.ui.thread_tree import build_weibo_thread_forest
 from alphavault.weibo.display import format_weibo_display_md
 
 
-def show_topic_timeline(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+def show_topic_timeline(
+    posts_all: pd.DataFrame,
+    assertions_filtered: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+) -> None:
     group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
     st.markdown(f"**{group_label}时间线**")
     options = sorted(assertions_filtered[group_col].dropna().unique().tolist())
@@ -27,35 +35,54 @@ def show_topic_timeline(assertions_filtered: pd.DataFrame, *, group_col: str, gr
         st.info("暂无数据。")
         return
 
-    if view_df["created_at"].notna().any():
-        pivot = (
-            view_df.dropna(subset=["created_at"])
-            .set_index("created_at")
-            .groupby("action")
-            .resample("D")
-            .size()
-            .unstack(level=0)
-            .fillna(0)
-        )
-        if not pivot.empty:
-            st.line_chart(pivot)
+    threads_all = build_weibo_thread_forest(view_df, posts_all=posts_all)
 
-    st.dataframe(
-        view_df.sort_values(by="created_at", ascending=False)[
-            [
-                "created_at",
-                "author",
-                "source",
-                "action",
-                "action_strength",
-                "summary",
-                "confidence",
-                "url",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
+    st.markdown("**tree（像 1.txt 那样）**")
+    if not threads_all:
+        st.info("当前筛选下，没有可用的 tree。")
+        return
+
+    max_threads = 1000
+    threads = threads_all[:max_threads]
+    total = len(threads)
+    if total <= 0:
+        st.info("当前筛选下，没有可用的 tree。")
+        return
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        page_size = int(
+            st.number_input(
+                "一页多少棵",
+                min_value=1,
+                max_value=50,
+                value=10,
+                step=1,
+            )
+        )
+    total_pages = max(1, int(math.ceil(total / max(1, page_size))))
+    with col2:
+        page = st.selectbox("第几页", list(range(1, total_pages + 1)))
+    with col3:
+        st.caption(f"共有 {total} 棵（最多展示前 {max_threads} 棵）")
+
+    start_idx = (int(page) - 1) * page_size
+    end_idx = min(start_idx + page_size, total)
+    st.caption(f"本页：{start_idx + 1} - {end_idx}")
+
+    for i in range(start_idx, end_idx):
+        thread = threads[i]
+        label = str(thread.get("label") or "").strip() or str(thread.get("root_id") or "").strip() or "tree"
+        st.markdown(f"**{i + 1}. {label}**")
+
+        tree_text = str(thread.get("tree_text") or "").rstrip()
+        if tree_text.strip():
+            st.code(tree_text, language="text")
+        else:
+            st.info("tree 为空。")
+
+        if i + 1 < end_idx:
+            st.divider()
 
 
 def show_learning_library(assertions_filtered: pd.DataFrame) -> None:

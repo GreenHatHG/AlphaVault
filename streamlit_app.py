@@ -156,6 +156,7 @@ def main() -> None:
 
     with tabs[3]:
         show_topic_timeline(
+            posts,
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
