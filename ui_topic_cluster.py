@@ -207,58 +207,94 @@ def show_topic_cluster_admin(
     current = topic_map[topic_map["cluster_key"] == selected_cluster].copy() if not topic_map.empty else pd.DataFrame()
     current_topics = sorted([str(x).strip() for x in current.get("topic_key", pd.Series(dtype=str)).dropna().tolist() if str(x).strip()])
 
+    def apply_keyword_search(word: str) -> None:
+        st.session_state["topic_cluster_manage_action"] = "增加"
+        st.session_state["topic_cluster_search_topic_key"] = str(word or "")
+        st.session_state["topic_cluster_to_add"] = []
+
     col_left, col_mid = st.columns([2, 1])
     with col_left:
         st.caption("v1 规则：一个 topic_key 只能属于一个板块；加入会自动“移动”。")
     with col_mid:
         st.metric("当前成员数", f"{len(current_topics)}")
 
-    st.markdown("**加入**")
-    all_topic_keys = sorted(
-        [str(x).strip() for x in assertions_all.get("topic_key", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()]
-    )
-    search = st.text_input("搜索 topic_key（建议先搜）", value="", key="topic_cluster_search_topic_key").strip()
-    if search:
-        candidates = [k for k in all_topic_keys if search.lower() in k.lower()]
-        candidates = candidates[:300]
+    # AI keywords shortcut: click to fill the search box below.
+    ai_shortcut = st.session_state.get(f"cluster_ai_result:{selected_cluster}", None)
+    if isinstance(ai_shortcut, dict):
+        shortcut_keywords = ai_shortcut.get("keywords")
+        if isinstance(shortcut_keywords, list):
+            shortcut_words = [str(x).strip() for x in shortcut_keywords if str(x).strip()]
+        else:
+            shortcut_words = []
     else:
-        candidates = []
-        st.caption("提示：topic_key 可能很多，请先搜索再加入。")
+        shortcut_words = []
 
-    to_add = st.multiselect(
-        "选择要加入的 topic_key",
-        options=candidates,
-        default=[],
-        key="topic_cluster_to_add",
-    )
-    if st.button("加入到这个板块", disabled=not bool(to_add)):
-        try:
-            ensure_cluster_schema(engine)
-            n = upsert_cluster_topics(engine, cluster_key=selected_cluster, topic_keys=to_add)
-        except Exception as exc:
-            st.error(f"加入失败：{type(exc).__name__}: {exc}")
-            st.stop()
-        st.success(f"已加入 {n} 个 topic_key。")
-        st.cache_data.clear()
-        st.rerun()
+    if shortcut_words:
+        st.markdown("**AI keywords 快捷搜**")
+        st.caption("点一下：自动切到“增加”，并把搜索框填好。")
+        words_for_buttons = shortcut_words[:15]
+        cols_kw = st.columns(min(5, len(words_for_buttons)))
+        for idx, word in enumerate(words_for_buttons):
+            col = cols_kw[idx % len(cols_kw)]
+            col.button(
+                str(word),
+                key=f"cluster_ai_keyword_quick_btn:{selected_cluster}:{idx}",
+                on_click=apply_keyword_search,
+                args=(str(word),),
+            )
 
-    st.markdown("**移出**")
-    to_remove = st.multiselect(
-        "选择要移出的 topic_key",
-        options=current_topics,
-        default=[],
-        key="topic_cluster_to_remove",
-    )
-    if st.button("从板块移出", disabled=not bool(to_remove)):
-        try:
-            ensure_cluster_schema(engine)
-            n = delete_cluster_topics(engine, topic_keys=to_remove)
-        except Exception as exc:
-            st.error(f"移出失败：{type(exc).__name__}: {exc}")
-            st.stop()
-        st.success(f"已移出 {n} 个 topic_key。")
-        st.cache_data.clear()
-        st.rerun()
+    action = st.radio("操作", options=["增加", "移除"], horizontal=True, key="topic_cluster_manage_action")
+    if action == "增加":
+        st.markdown("**增加**")
+        all_topic_keys = sorted(
+            [
+                str(x).strip()
+                for x in assertions_all.get("topic_key", pd.Series(dtype=str)).dropna().unique().tolist()
+                if str(x).strip()
+            ]
+        )
+        search = st.text_input("搜索 topic_key（建议先搜）", value="", key="topic_cluster_search_topic_key").strip()
+        if search:
+            candidates = [k for k in all_topic_keys if search.lower() in k.lower()]
+            candidates = candidates[:300]
+        else:
+            candidates = []
+            st.caption("提示：topic_key 可能很多，请先搜索再增加。")
+
+        to_add = st.multiselect(
+            "选择要增加的 topic_key",
+            options=candidates,
+            default=[],
+            key="topic_cluster_to_add",
+        )
+        if st.button("增加到这个板块", disabled=not bool(to_add)):
+            try:
+                ensure_cluster_schema(engine)
+                n = upsert_cluster_topics(engine, cluster_key=selected_cluster, topic_keys=to_add)
+            except Exception as exc:
+                st.error(f"增加失败：{type(exc).__name__}: {exc}")
+                st.stop()
+            st.success(f"已增加 {n} 个 topic_key。")
+            st.cache_data.clear()
+            st.rerun()
+    else:
+        st.markdown("**移除**")
+        to_remove = st.multiselect(
+            "选择要移除的 topic_key",
+            options=current_topics,
+            default=[],
+            key="topic_cluster_to_remove",
+        )
+        if st.button("从板块移除", disabled=not bool(to_remove)):
+            try:
+                ensure_cluster_schema(engine)
+                n = delete_cluster_topics(engine, topic_keys=to_remove)
+            except Exception as exc:
+                st.error(f"移除失败：{type(exc).__name__}: {exc}")
+                st.stop()
+            st.success(f"已移除 {n} 个 topic_key。")
+            st.cache_data.clear()
+            st.rerun()
 
     st.markdown("**当前成员列表**")
     if current_topics:
@@ -323,23 +359,25 @@ def show_topic_cluster_admin(
         )
         default_max_total_topics = min(5000, max(200, total_topics))
         max_total_topics = int(
-            st.slider(
+            st.number_input(
                 "最多处理 topic_key 数量",
-                200,
-                12000,
-                default_max_total_topics,
-                step=200,
+                min_value=200,
+                max_value=12000,
+                value=int(default_max_total_topics),
+                step=100,
                 help="越大：越全，但更慢、也更费。一般 2000~5000 就够看效果。",
+                key="cluster_ai_max_total_topics_input",
             )
         )
         chunk_size = int(
-            st.slider(
+            st.number_input(
                 "每批 topic_key 数量",
-                100,
-                800,
-                400,
+                min_value=100,
+                max_value=800,
+                value=400,
                 step=50,
                 help="每批越大：调用次数更少，但更容易超长；每批越小：更稳，但调用次数更多。",
+                key="cluster_ai_chunk_size_input",
             )
         )
 
@@ -348,6 +386,11 @@ def show_topic_cluster_admin(
     count_by_topic = {str(k): int(v) for k, v in counts_series.head(int(max_total_topics)).items()}
     candidate_records = _build_candidate_records(assertions_all, topic_keys, count_by_topic)
     candidate_set = set(topic_keys)
+    hint_by_topic = {
+        str(item.get("topic_key") or "").strip(): str(item.get("hint") or "").strip()
+        for item in candidate_records
+        if str(item.get("topic_key") or "").strip()
+    }
 
     call_count = (len(topic_keys) + int(chunk_size) - 1) // int(chunk_size) if topic_keys else 0
     if st.button(f"让 AI 分批筛 topic_key（共 {call_count} 次调用）", type="primary", disabled=not bool(topic_keys)):
@@ -486,6 +529,7 @@ def show_topic_cluster_admin(
                 {
                     **item,
                     "count": int(count_by_topic.get(topic_key, 0)),
+                    "hint": str(hint_by_topic.get(topic_key, "") or "").strip(),
                 }
             )
         return out
@@ -494,16 +538,62 @@ def show_topic_cluster_admin(
     unsure_items = filter_to_candidates(unsure_items)
     exclude_items = filter_to_candidates(exclude_items)
 
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("include", f"{len(include_items)}")
-    col_b.metric("unsure", f"{len(unsure_items)}")
-    col_c.metric("exclude", f"{len(exclude_items)}")
-
     keywords = result.get("keywords")
+    words: list[str] = []
     if isinstance(keywords, list) and keywords:
         words = [str(x).strip() for x in keywords if str(x).strip()]
         if words:
             st.caption("AI keywords: " + ", ".join(words[:30]))
+            st.caption("点一个 keyword：去上面“成员管理→增加”里搜。")
+            words_for_buttons = words[:15]
+            cols_kw2 = st.columns(min(5, len(words_for_buttons)))
+            for idx, word in enumerate(words_for_buttons):
+                col = cols_kw2[idx % len(cols_kw2)]
+                col.button(
+                    str(word),
+                    key=f"cluster_ai_keyword_btn_ai:{selected_cluster}:{idx}",
+                    on_click=apply_keyword_search,
+                    args=(str(word),),
+                )
+
+    negative_keywords = result.get("negative_keywords")
+    negative_words: list[str] = []
+    if isinstance(negative_keywords, list) and negative_keywords:
+        negative_words = [str(x).strip() for x in negative_keywords if str(x).strip()]
+        if negative_words:
+            st.caption("AI negative: " + ", ".join(negative_words[:30]))
+
+    def contains_negative(text_value: object) -> bool:
+        text = str(text_value or "").lower()
+        for word in negative_words:
+            if word and word.lower() in text:
+                return True
+        return False
+
+    hide_negative = False
+    if negative_words:
+        hide_negative = st.checkbox("隐藏 negative", value=False, key="cluster_ai_hide_negative")
+        if hide_negative:
+            include_items = [
+                item
+                for item in include_items
+                if not (contains_negative(item.get("topic_key")) or contains_negative(item.get("hint")))
+            ]
+            unsure_items = [
+                item
+                for item in unsure_items
+                if not (contains_negative(item.get("topic_key")) or contains_negative(item.get("hint")))
+            ]
+            exclude_items = [
+                item
+                for item in exclude_items
+                if not (contains_negative(item.get("topic_key")) or contains_negative(item.get("hint")))
+            ]
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("include", f"{len(include_items)}")
+    col_b.metric("unsure", f"{len(unsure_items)}")
+    col_c.metric("exclude", f"{len(exclude_items)}")
 
     show_unsure = st.checkbox("显示 unsure", value=True, key="cluster_ai_show_unsure")
     show_exclude = st.checkbox("显示 exclude", value=False, key="cluster_ai_show_exclude")
@@ -535,39 +625,151 @@ def show_topic_cluster_admin(
         )
 
     st.markdown("**写入板块成员**")
-    include_unsure = st.checkbox("把 unsure 也一起加入", value=False, key="cluster_ai_include_unsure")
-    to_write = [item["topic_key"] for item in include_items]
-    if include_unsure:
-        to_write += [item["topic_key"] for item in unsure_items]
-    to_write = [str(x).strip() for x in to_write if str(x).strip()]
-    to_write = sorted(set(to_write))
+    st.caption("先选，再写入：新增默认全选；移入默认不选；unsure 默认不选。")
 
-    if st.button("写入这个板块（按 AI include）", disabled=not bool(to_write)):
+    # Build a quick topic_key -> cluster_key map for grouping (new vs move-in).
+    topic_to_cluster: dict[str, str] = {}
+    if not topic_map.empty and "topic_key" in topic_map.columns and "cluster_key" in topic_map.columns:
+        for _, row in topic_map[["topic_key", "cluster_key"]].dropna().iterrows():
+            topic_key = str(row.get("topic_key") or "").strip()
+            cluster_key = str(row.get("cluster_key") or "").strip()
+            if topic_key and cluster_key:
+                topic_to_cluster[topic_key] = cluster_key
+
+    def parse_confidence(raw: object, default_value: float) -> float:
+        try:
+            val = float(raw)
+        except Exception:
+            val = float(default_value)
+        return max(0.0, min(1.0, float(val)))
+
+    include_conf_by_topic: dict[str, float] = {}
+    for item in include_items:
+        topic_key = str(item.get("topic_key") or "").strip()
+        if topic_key:
+            include_conf_by_topic[topic_key] = parse_confidence(item.get("confidence", None), 0.8)
+
+    unsure_conf_by_topic: dict[str, float] = {}
+    for item in unsure_items:
+        topic_key = str(item.get("topic_key") or "").strip()
+        if topic_key and topic_key not in include_conf_by_topic:
+            unsure_conf_by_topic[topic_key] = parse_confidence(item.get("confidence", None), 0.55)
+
+    def split_new_and_move(topic_keys: list[str]) -> tuple[list[str], list[str], dict[str, str]]:
+        new_keys: list[str] = []
+        move_keys: list[str] = []
+        from_cluster_by_topic: dict[str, str] = {}
+        for topic_key in topic_keys:
+            existing_cluster = str(topic_to_cluster.get(topic_key, "") or "").strip()
+            if not existing_cluster:
+                new_keys.append(topic_key)
+                continue
+            if existing_cluster == selected_cluster:
+                continue
+            move_keys.append(topic_key)
+            from_cluster_by_topic[topic_key] = existing_cluster
+        return new_keys, move_keys, from_cluster_by_topic
+
+    include_keys = [str(item.get("topic_key") or "").strip() for item in include_items if str(item.get("topic_key") or "").strip()]
+    include_keys = sorted(set(include_keys))
+    include_new, include_move, include_from = split_new_and_move(include_keys)
+
+    unsure_keys = [str(item.get("topic_key") or "").strip() for item in unsure_items if str(item.get("topic_key") or "").strip()]
+    unsure_keys = sorted(set(unsure_keys))
+    unsure_new, unsure_move, unsure_from = split_new_and_move(unsure_keys)
+
+    def sort_by_count(items: list[str]) -> list[str]:
+        return sorted(items, key=lambda k: (-int(count_by_topic.get(k, 0)), str(k)))
+
+    include_new = sort_by_count(include_new)
+    include_move = sort_by_count(include_move)
+    unsure_new = sort_by_count(unsure_new)
+    unsure_move = sort_by_count(unsure_move)
+
+    from_cluster_by_topic = {**include_from, **unsure_from}
+
+    def format_basic(topic_key: str) -> str:
+        count = int(count_by_topic.get(topic_key, 0))
+        return f"{topic_key}（{count}次）" if count else topic_key
+
+    def format_move(topic_key: str) -> str:
+        from_key = str(from_cluster_by_topic.get(topic_key, "") or "").strip()
+        from_label = _format_cluster_label(from_key, name_by_key) if from_key else "未知"
+        count = int(count_by_topic.get(topic_key, 0))
+        count_part = f"，{count}次" if count else ""
+        return f"{topic_key}（从 {from_label} 移入{count_part}）"
+
+    col_w1, col_w2 = st.columns(2)
+    with col_w1:
+        st.markdown("**include：新增**")
+        include_new_selected = st.multiselect(
+            "选择要新增进本板块的 topic_key",
+            options=include_new,
+            default=include_new,
+            format_func=format_basic,
+            key=f"cluster_ai_write_include_new:{selected_cluster}",
+        )
+    with col_w2:
+        st.markdown("**include：移入**")
+        st.caption("提示：移入会把 topic_key 从原板块挪到本板块。")
+        include_move_selected = st.multiselect(
+            "选择要移入本板块的 topic_key",
+            options=include_move,
+            default=[],
+            format_func=format_move,
+            key=f"cluster_ai_write_include_move:{selected_cluster}",
+        )
+
+    want_unsure = st.checkbox("我也要选 unsure", value=False, key=f"cluster_ai_write_want_unsure:{selected_cluster}")
+    unsure_new_selected: list[str] = []
+    unsure_move_selected: list[str] = []
+    if want_unsure and (unsure_new or unsure_move):
+        col_u1, col_u2 = st.columns(2)
+        with col_u1:
+            st.markdown("**unsure：新增**")
+            unsure_new_selected = st.multiselect(
+                "选择要新增（unsure）的 topic_key",
+                options=unsure_new,
+                default=[],
+                format_func=format_basic,
+                key=f"cluster_ai_write_unsure_new:{selected_cluster}",
+            )
+        with col_u2:
+            st.markdown("**unsure：移入**")
+            unsure_move_selected = st.multiselect(
+                "选择要移入（unsure）的 topic_key",
+                options=unsure_move,
+                default=[],
+                format_func=format_move,
+                key=f"cluster_ai_write_unsure_move:{selected_cluster}",
+            )
+
+    to_write = [
+        *[str(x).strip() for x in include_new_selected],
+        *[str(x).strip() for x in include_move_selected],
+        *[str(x).strip() for x in unsure_new_selected],
+        *[str(x).strip() for x in unsure_move_selected],
+    ]
+    to_write = [x for x in to_write if x]
+    to_write = sorted(set(to_write))
+    st.caption(f"本次将写入：{len(to_write)} 个 topic_key")
+
+    if st.button("写入这个板块（按你勾选的）", disabled=not bool(to_write)):
         try:
             ensure_cluster_schema(engine)
-            item_conf: dict[str, float] = {}
-            for item in include_items:
-                topic_key = str(item.get("topic_key") or "").strip()
-                if not topic_key:
-                    continue
-                conf = item.get("confidence", None)
-                try:
-                    item_conf[topic_key] = float(conf)
-                except Exception:
-                    item_conf[topic_key] = 0.8
-            if include_unsure:
-                for item in unsure_items:
-                    topic_key = str(item.get("topic_key") or "").strip()
-                    if not topic_key or topic_key in item_conf:
-                        continue
-                    conf = item.get("confidence", None)
-                    try:
-                        item_conf[topic_key] = float(conf)
-                    except Exception:
-                        item_conf[topic_key] = 0.55
-
-            payloads = [{"topic_key": k, "source": "ai", "confidence": item_conf.get(k, 0.75)} for k in to_write]
-            n = upsert_cluster_topics_detailed(engine, cluster_key=selected_cluster, topic_items=payloads, default_source="ai", default_confidence=0.75)
+            payloads: list[dict] = []
+            for topic_key in to_write:
+                conf = include_conf_by_topic.get(topic_key)
+                if conf is None:
+                    conf = unsure_conf_by_topic.get(topic_key, 0.75)
+                payloads.append({"topic_key": topic_key, "source": "ai", "confidence": float(conf)})
+            n = upsert_cluster_topics_detailed(
+                engine,
+                cluster_key=selected_cluster,
+                topic_items=payloads,
+                default_source="ai",
+                default_confidence=0.75,
+            )
         except Exception as exc:
             st.error(f"写入失败：{type(exc).__name__}: {exc}")
             st.stop()

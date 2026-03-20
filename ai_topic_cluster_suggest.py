@@ -164,6 +164,10 @@ def suggest_topics_for_cluster(
 - 如果 topic_key 是类似 stock:601225.SH 这种“代码”，请优先参考候选里的 hint（比如 stock_name/industry）。没有 hint 就更保守，放 unsure_topics。
 - confidence 范围 0~1。
 - include_topics / unsure_topics / exclude_topics 每个最多 {int(max_items_per_list)} 条。
+- keywords：给 5~15 个“可以直接拿去搜索”的短词（建议 2~6 个字），用于在系统里搜 topic_key/hint。
+  - 尽量具体，别太泛（不要只给“相关/行业/板块/概念”这种）。
+  - 不要带空格/标点；不要重复；如果实在想不到，可以给 []。
+- negative_keywords：同理，给 0~10 个“不想要的词”，用于隐藏/过滤明显不相关的 topic_key/hint（没有就 []）。
 
 候选 topic_key：
 {candidates_text}
