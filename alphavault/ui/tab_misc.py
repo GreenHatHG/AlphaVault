@@ -8,12 +8,30 @@ This module groups the smaller tabs to keep files under control.
 
 from datetime import datetime, timedelta
 import math
+import re
 
 import pandas as pd
 import streamlit as st
 
 from alphavault.ui.thread_tree import build_weibo_thread_forest
 from alphavault.weibo.display import format_weibo_display_md
+
+
+def _split_keywords_or(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    raw = raw.replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",")
+    parts = re.split(r"[,\s]+", raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        word = str(part or "").strip()
+        if not word or word in seen:
+            continue
+        seen.add(word)
+        out.append(word)
+    return out
 
 
 def show_topic_timeline(
@@ -30,10 +48,68 @@ def show_topic_timeline(
         st.info(f"暂无{group_label}数据。")
         return
     selected_key = st.selectbox(f"选择{group_label}", options)
-    view_df = assertions_filtered[assertions_filtered[group_col] == selected_key]
-    if view_df.empty:
+    group_view = assertions_filtered[assertions_filtered[group_col] == selected_key]
+
+    group_post_uids = set(
+        str(x).strip()
+        for x in group_view.get("post_uid", pd.Series(dtype=str)).dropna().tolist()
+        if str(x).strip()
+    )
+
+    keyword_post_uids: set[str] = set()
+    show_keyword_union = group_label == "板块" and group_col == "cluster_display" and "raw_text" in assertions_filtered.columns
+    if show_keyword_union:
+        cluster_keys = []
+        if "cluster_key" in group_view.columns:
+            cluster_keys = sorted(
+                set(
+                    str(x).strip()
+                    for x in group_view["cluster_key"].dropna().tolist()
+                    if str(x).strip()
+                )
+            )
+        cluster_key = cluster_keys[0] if cluster_keys else ""
+        if len(cluster_keys) > 1:
+            st.caption("提示：这个板块名对应多个ID，先用第一个。")
+
+        default_keywords: list[str] = []
+        if cluster_key:
+            ai_result = st.session_state.get(f"cluster_ai_result:{cluster_key}", None)
+            if isinstance(ai_result, dict):
+                raw_keywords = ai_result.get("keywords")
+                if isinstance(raw_keywords, list):
+                    default_keywords = [str(x).strip() for x in raw_keywords if str(x).strip()]
+        default_text = "\n".join(default_keywords)
+
+        keywords_text = st.text_area(
+            "关键字（多个，OR；会把结果拼起来）",
+            value=default_text,
+            height=80,
+            key=f"timeline_keyword_or:{group_col}:{selected_key}",
+        )
+        words = _split_keywords_or(keywords_text)
+        if words:
+            escaped = [re.escape(w) for w in words]
+            pattern = "|".join(escaped)
+            post_text = assertions_filtered[["post_uid", "raw_text"]].copy()
+            post_text["post_uid"] = post_text["post_uid"].astype(str).str.strip()
+            post_text = post_text[post_text["post_uid"].ne("")]
+            post_text = post_text.drop_duplicates(subset=["post_uid"], keep="first")
+            mask = post_text["raw_text"].astype(str).str.contains(pattern, case=False, na=False, regex=True)
+            keyword_post_uids = set(post_text.loc[mask, "post_uid"].tolist())
+
+        merged_uids = group_post_uids | keyword_post_uids
+        st.caption(
+            f"板块命中 {len(group_post_uids)} 帖，关键字命中 {len(keyword_post_uids)} 帖，合并后 {len(merged_uids)} 帖"
+        )
+    else:
+        merged_uids = group_post_uids
+
+    if not merged_uids:
         st.info("暂无数据。")
         return
+
+    view_df = assertions_filtered[assertions_filtered["post_uid"].isin(merged_uids)]
 
     threads_all = build_weibo_thread_forest(view_df, posts_all=posts_all)
 
