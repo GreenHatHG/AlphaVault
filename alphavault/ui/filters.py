@@ -15,6 +15,8 @@ from alphavault.topic_cluster import UNCATEGORIZED_LABEL
 
 
 DEFAULT_DATE_RANGE_DAYS = 30
+MAX_FILTER_OPTIONS = 2000
+MAX_FILTER_MATCHES = 300
 
 REQUIRED_POST_COLS: dict[str, object] = {
     "post_uid": "",
@@ -175,12 +177,39 @@ def _sidebar_filter_posts_status(posts_filtered: pd.DataFrame, *, posts_all: pd.
 
 
 def _sidebar_filter_posts_authors(posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame) -> pd.DataFrame:
-    author_options: list = []
     if "author" in posts_all.columns:
-        author_options = sorted(posts_all["author"].dropna().unique().tolist())
+        series = posts_all["author"]
     elif "author" in posts_filtered.columns:
-        author_options = sorted(posts_filtered["author"].dropna().unique().tolist())
-    selected_authors = st.sidebar.multiselect("作者", author_options, default=None)
+        series = posts_filtered["author"]
+    else:
+        return posts_filtered
+
+    s = series.dropna().astype(str).str.strip()
+    s = s[s.ne("")]
+    if s.empty:
+        return posts_filtered
+
+    unique_count = int(s.nunique())
+    if unique_count <= MAX_FILTER_OPTIONS:
+        author_options = sorted(s.unique().tolist())
+        selected_authors = st.sidebar.multiselect("作者", author_options, default=None)
+    else:
+        st.sidebar.caption("提示：作者很多，建议先搜索。")
+        search = st.sidebar.text_input("搜索作者", value="", key="filter_author_search").strip()
+        if not search:
+            return posts_filtered
+        if search:
+            mask = s.str.contains(search, case=False, na=False, regex=False)
+            candidates = s[mask].drop_duplicates().head(MAX_FILTER_MATCHES).tolist()
+            st.sidebar.caption(f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）")
+
+        selected_authors = st.sidebar.multiselect(
+            "作者",
+            options=[str(x) for x in candidates],
+            default=None,
+            key="filter_author_pick",
+        )
+
     if not selected_authors:
         return posts_filtered
     return posts_filtered[posts_filtered["author"].isin(selected_authors)]
@@ -252,14 +281,41 @@ def _sidebar_filter_groups(
     group_by_cluster: bool,
     show_uncategorized: bool,
 ) -> pd.DataFrame:
-    group_options = (
-        sorted(assertions_all[group_col].dropna().unique().tolist())
-        if group_col in assertions_all.columns
-        else []
-    )
+    if group_col not in assertions_all.columns:
+        return assertions_joined
+
+    s = assertions_all[group_col].dropna().astype(str).str.strip()
+    s = s[s.ne("")]
     if group_by_cluster and not show_uncategorized:
-        group_options = [item for item in group_options if str(item).strip() != UNCATEGORIZED_LABEL]
-    selected_groups = st.sidebar.multiselect(group_label, group_options, default=None)
+        s = s[s.ne(UNCATEGORIZED_LABEL)]
+    if s.empty:
+        return assertions_joined
+
+    unique_count = int(s.nunique())
+    if unique_count <= MAX_FILTER_OPTIONS:
+        group_options = sorted(s.unique().tolist())
+        selected_groups = st.sidebar.multiselect(group_label, group_options, default=None)
+    else:
+        st.sidebar.caption(f"提示：{group_label} 很多，建议先搜索。")
+        search = st.sidebar.text_input(
+            f"搜索{group_label}",
+            value="",
+            key=f"filter_group_search:{group_col}",
+        ).strip()
+        if not search:
+            return assertions_joined
+        if search:
+            mask = s.str.contains(search, case=False, na=False, regex=False)
+            candidates = s[mask].drop_duplicates().head(MAX_FILTER_MATCHES).tolist()
+            st.sidebar.caption(f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）")
+
+        selected_groups = st.sidebar.multiselect(
+            group_label,
+            options=[str(x) for x in candidates],
+            default=None,
+            key=f"filter_group_pick:{group_col}",
+        )
+
     if not selected_groups or group_col not in assertions_joined.columns:
         return assertions_joined
     return assertions_joined[assertions_joined[group_col].isin(selected_groups)]

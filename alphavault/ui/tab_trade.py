@@ -5,13 +5,19 @@ Streamlit tab: trade flow.
 """
 
 from datetime import datetime, timedelta
+import math
 
 import pandas as pd
 import streamlit as st
 
+from alphavault.ui.thread_tree import build_weibo_thread_forest
+
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
 TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
+
+DEFAULT_TRADE_FLOW_PAGE_SIZE = 5
+MAX_TRADE_FLOW_PAGE_SIZE = 20
 
 
 def format_age_label(max_ts: datetime, ts: datetime) -> str:
@@ -32,20 +38,34 @@ def format_age_label(max_ts: datetime, ts: datetime) -> str:
 
 
 def trade_action_badge(action: str, strength: object) -> str:
-    """Return a short badge like '↑买3' / '↓卖2' / '→看'."""
+    """Return a readable action label like 'trade.sell-卖-中等偏强-强度2'."""
     action_str = str(action or "").strip()
     strength_val = pd.to_numeric(strength, errors="coerce")
     strength_num = 0 if pd.isna(strength_val) else int(strength_val)
     strength_num = max(0, min(3, strength_num))
+    strength_text = "很弱"
+    if strength_num == 1:
+        strength_text = "偏弱"
+    elif strength_num == 2:
+        strength_text = "中等偏强"
+    elif strength_num >= 3:
+        strength_text = "很强"
+
+    action_cn = ""
     if action_str in TRADE_BUY_ACTIONS:
-        return f"↑买{strength_num}"
-    if action_str in TRADE_SELL_ACTIONS:
-        return f"↓卖{strength_num}"
-    if action_str in TRADE_HOLD_ACTIONS:
-        return "→看"
-    if action_str.startswith("trade."):
-        return "·交易"
-    return "·"
+        action_cn = "买"
+    elif action_str in TRADE_SELL_ACTIONS:
+        action_cn = "卖"
+    elif action_str in TRADE_HOLD_ACTIONS:
+        action_cn = "看"
+    elif action_str.startswith("trade."):
+        action_cn = "交易"
+
+    if action_cn:
+        return f"{action_str}-{action_cn}-{strength_text}-强度{strength_num}"
+    if action_str:
+        return f"{action_str}-{strength_text}-强度{strength_num}"
+    return f"交易-{strength_text}-强度{strength_num}"
 
 
 def _trade_group_col(assertions_filtered: pd.DataFrame, group_col: str) -> str:
@@ -59,42 +79,171 @@ def _filter_trade_df(assertions_filtered: pd.DataFrame) -> pd.DataFrame:
     return assertions_filtered[trade_mask].copy()
 
 
+def _format_ts(value: object) -> str:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return ""
+    try:
+        return ts.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
+
+
+def _unique_post_uids_in_order(df: pd.DataFrame) -> list[str]:
+    if df.empty or "post_uid" not in df.columns:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in df["post_uid"].tolist():
+        uid = str(item or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+def _build_tree_maps(
+    view_df: pd.DataFrame,
+    *,
+    posts_all: pd.DataFrame | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    if view_df.empty or "post_uid" not in view_df.columns:
+        return {}, {}
+    if posts_all is None or posts_all.empty:
+        return {}, {}
+
+    selected_uids = _unique_post_uids_in_order(view_df)
+    selected_set = set(selected_uids)
+    if not selected_set:
+        return {}, {}
+
+    threads_all = build_weibo_thread_forest(view_df, posts_all=posts_all)
+    if not threads_all:
+        return {}, {}
+
+    tree_by_uid: dict[str, str] = {}
+    label_by_uid: dict[str, str] = {}
+    for thread in threads_all:
+        tree_text = str(thread.get("tree_text") or "").rstrip()
+        label = str(thread.get("label") or "").strip()
+        nodes = thread.get("nodes") or {}
+        if not isinstance(nodes, dict):
+            continue
+        for node in nodes.values():
+            uid = str((node or {}).get("post_uid") or "").strip()
+            if uid and uid in selected_set:
+                tree_by_uid.setdefault(uid, tree_text)
+                label_by_uid.setdefault(uid, label)
+    return tree_by_uid, label_by_uid
+
+
+def _paginate_rows(total: int, *, key_prefix: str) -> tuple[int, int, int, int]:
+    if total <= 0:
+        return 1, 1, 0, 0
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        page_size = int(
+            st.number_input(
+                "一页多少条",
+                min_value=1,
+                max_value=MAX_TRADE_FLOW_PAGE_SIZE,
+                value=int(DEFAULT_TRADE_FLOW_PAGE_SIZE),
+                step=1,
+                key=f"{key_prefix}:page_size",
+            )
+        )
+
+    total_pages = max(1, int(math.ceil(total / max(1, page_size))))
+    page_key = f"{key_prefix}:page"
+    if page_key in st.session_state:
+        try:
+            current = int(st.session_state.get(page_key) or 1)
+        except Exception:
+            current = 1
+        st.session_state[page_key] = max(1, min(current, total_pages))
+    with col2:
+        page = st.selectbox(
+            "第几页",
+            list(range(1, total_pages + 1)),
+            index=0,
+            key=page_key,
+        )
+    with col3:
+        st.caption(f"共有 {total} 条")
+
+    start_idx = (int(page) - 1) * page_size
+    end_idx = min(start_idx + page_size, total)
+    st.caption(f"本页：{start_idx + 1} - {end_idx}")
+    return int(page_size), int(page), int(start_idx), int(end_idx)
+
+
 def _render_recent_trade_flow(
     trade_df: pd.DataFrame,
     *,
     group_col: str,
     group_label: str,
+    posts_all: pd.DataFrame | None,
 ) -> None:
     st.markdown("**最近交易流（按时间倒序）**")
     trade_view = trade_df.sort_values(by="created_at", ascending=False)
-    show_raw_col = st.checkbox(
-        "表格展示原文（完整格式）",
-        value=False,
-        key="trade_flow_show_raw_col",
-    )
-    group_cols = [group_col] if group_col == "topic_key" else [group_col, "topic_key"]
-    base_cols = [
-        "created_at",
-        "author",
-        "source",
-        *group_cols,
-        "action",
-        "action_strength",
-        "summary",
-        "confidence",
-        "url",
-    ]
-    raw_col = "display_md" if "display_md" in trade_view.columns else "raw_text"
-    display_df = (
-        trade_view.assign(原文=trade_view[raw_col].fillna(""))[base_cols + ["原文"]]
-        if show_raw_col
-        else trade_view[base_cols]
-    )
-    rename_map = {"topic_key": "主题"}
-    if group_col != "topic_key":
-        rename_map[group_col] = group_label
-    display_df = display_df.rename(columns=rename_map)
-    st.dataframe(display_df, width="stretch", hide_index=True)
+    if trade_view.empty:
+        st.info("没有交易观点。")
+        return
+
+    total = len(trade_view)
+    _, _, start_idx, end_idx = _paginate_rows(total, key_prefix="trade_flow")
+    page_df = trade_view.iloc[start_idx:end_idx].copy()
+
+    tree_by_uid, label_by_uid = _build_tree_maps(page_df, posts_all=posts_all)
+    if posts_all is None or posts_all.empty:
+        st.info("没有帖子数据，tree 画不出来。")
+
+    for i, (_, row) in enumerate(page_df.iterrows(), start=1):
+        post_uid = str(row.get("post_uid") or "").strip()
+        created = _format_ts(row.get("created_at"))
+        author = str(row.get("author") or "").strip()
+        action_badge = trade_action_badge(row.get("action"), row.get("action_strength"))
+        summary = str(row.get("summary") or "").strip()
+        group_val = str(row.get(group_col) or "").strip()
+        topic_key = str(row.get("topic_key") or "").strip()
+        confidence = row.get("confidence")
+        url = str(row.get("url") or "").strip()
+
+        title = summary if summary else action_badge
+        st.markdown(f"**{action_badge} {title}**")
+
+        meta_parts = [p for p in [created, author] if p]
+        if group_val:
+            meta_parts.append(f"{group_label}：{group_val}")
+        if topic_key and topic_key != group_val:
+            meta_parts.append(f"主题：{topic_key}")
+        if confidence is not None and str(confidence).strip():
+            meta_parts.append(f"置信度：{confidence}")
+        if meta_parts:
+            st.caption(" · ".join(meta_parts))
+
+        if url:
+            st.link_button(
+                f"打开链接（{start_idx + i}）",
+                url,
+                type="secondary",
+                width="content",
+            )
+
+        label = label_by_uid.get(post_uid, "")
+        if label:
+            st.caption(f"对话：{label}")
+
+        tree_text = tree_by_uid.get(post_uid, "").rstrip()
+        if tree_text.strip():
+            st.code(tree_text, language="text")
+        else:
+            st.info("tree 为空。")
+
+        if i < len(page_df):
+            st.divider()
 
 
 def _trade_board_settings() -> tuple[int, str, int, int]:
@@ -384,13 +533,24 @@ def _render_trade_detail(board_df: pd.DataFrame, *, top_asset_keys: list, group_
     )
 
 
-def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+def show_trade_flow(
+    assertions_filtered: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+    posts_all: pd.DataFrame | None = None,
+) -> None:
     group_col = _trade_group_col(assertions_filtered, group_col)
     trade_df = _filter_trade_df(assertions_filtered)
     if trade_df.empty:
         st.info("当前筛选下没有交易类观点。")
         return
-    _render_recent_trade_flow(trade_df, group_col=group_col, group_label=group_label)
+    _render_recent_trade_flow(
+        trade_df,
+        group_col=group_col,
+        group_label=group_label,
+        posts_all=posts_all,
+    )
 
     st.divider()
     st.markdown("**作业板（抄作业用，一眼看懂）**")

@@ -13,8 +13,6 @@ from alphavault.ui.data import (
     enrich_posts,
     load_sources,
     load_topic_cluster_sources,
-    normalize_assertions_datetime,
-    normalize_datetime_columns,
 )
 from alphavault.ui.filters import build_filters
 from alphavault.ui.tab_misc import (
@@ -96,10 +94,7 @@ def main() -> None:
     if posts.empty:
         st.warning("Turso 里还没有“已处理”的数据（processed_at 为空会被隐藏）。")
         st.stop()
-    posts = normalize_datetime_columns(posts)
     posts = enrich_posts(posts)
-    assertions = normalize_assertions_datetime(assertions)
-    assertions = enrich_assertions(assertions)
 
     turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
@@ -113,26 +108,30 @@ def main() -> None:
         post_overrides=cluster_post_overrides_df,
     )
 
-    assertion_counts = assertions.groupby("post_uid")["idx"].count()
-    posts["assertion_count"] = posts["post_uid"].map(assertion_counts).fillna(0).astype(int)
-
     posts_filtered, assertions_filtered, meta = build_filters(posts, assertions)
 
-    tabs = st.tabs(
-        [
-            "总览",
-            "交易流",
-            "风险雷达",
-            "主题时间线",
-            "关注页",
-            "主题聚合",
-            "学习库",
-            "冲突/变化",
-            "数据表",
-        ]
+    pages = [
+        "总览",
+        "交易流",
+        "风险雷达",
+        "主题时间线",
+        "关注页",
+        "主题聚合",
+        "学习库",
+        "冲突/变化",
+        "数据表",
+    ]
+    selected_page = st.segmented_control(
+        "页面",
+        pages,
+        default=pages[0],
+        key="main_page",
+        label_visibility="collapsed",
+        width="stretch",
     )
+    selected_page = str(selected_page or pages[0])
 
-    with tabs[0]:
+    if selected_page == "总览":
         show_kpis(posts_filtered, assertions_filtered)
         st.divider()
         show_overview_charts(
@@ -141,30 +140,35 @@ def main() -> None:
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
+        return
 
-    with tabs[1]:
+    if selected_page == "交易流":
         show_trade_flow(
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
+            posts_all=posts,
         )
+        return
 
-    with tabs[2]:
+    if selected_page == "风险雷达":
         show_risk_radar(
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
+        return
 
-    with tabs[3]:
+    if selected_page == "主题时间线":
         show_topic_timeline(
             posts,
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
+        return
 
-    with tabs[4]:
+    if selected_page == "关注页":
         show_follow_pages(
             turso_url=turso_url,
             turso_token=turso_token,
@@ -172,8 +176,9 @@ def main() -> None:
             assertions_filtered=assertions_filtered,
             clusters=clusters_df,
         )
+        return
 
-    with tabs[5]:
+    if selected_page == "主题聚合":
         engine = ensure_turso_engine(turso_url, turso_token)
         show_topic_cluster_admin(
             engine=engine,
@@ -182,24 +187,32 @@ def main() -> None:
             topic_map=cluster_topic_map_df,
             load_error=cluster_load_error,
         )
+        return
 
-    with tabs[6]:
-        show_learning_library(assertions_filtered)
+    if selected_page == "学习库":
+        show_learning_library(enrich_assertions(assertions_filtered))
+        return
 
-    with tabs[7]:
+    if selected_page == "冲突/变化":
         show_conflicts_and_changes(
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
+        return
 
-    with tabs[8]:
-        show_tables(
-            posts_filtered,
-            assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
-        )
+    assertion_counts = assertions_filtered.groupby("post_uid")["idx"].count() if not assertions_filtered.empty else None
+    posts_view = posts_filtered.copy()
+    if assertion_counts is not None:
+        posts_view["assertion_count"] = posts_view["post_uid"].map(assertion_counts).fillna(0).astype(int)
+    else:
+        posts_view["assertion_count"] = 0
+    show_tables(
+        posts_view,
+        enrich_assertions(assertions_filtered),
+        group_col=meta["group_col"],
+        group_label=meta["group_label"],
+    )
 
 
 if __name__ == "__main__":
