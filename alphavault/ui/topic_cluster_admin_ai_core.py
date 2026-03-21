@@ -81,7 +81,7 @@ def _run_ai_batches(
                 }
             )
             st.session_state[f"cluster_ai_call_logs:{selected_cluster}"] = call_logs
-            log_placeholder.dataframe(pd.DataFrame(call_logs), use_container_width=True, hide_index=True)
+            log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
             if debug_terminal_logs:
                 print(
                     f"[cluster-ai] error {idx}/{len(chunks)} sec={cost_sec:.2f} {type(exc).__name__}: {exc}",
@@ -106,7 +106,7 @@ def _run_ai_batches(
             }
         )
         st.session_state[f"cluster_ai_call_logs:{selected_cluster}"] = call_logs
-        log_placeholder.dataframe(pd.DataFrame(call_logs), use_container_width=True, hide_index=True)
+        log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
 
         if debug_terminal_logs:
             print(
@@ -251,7 +251,7 @@ def _render_ai_section(
     call_logs = st.session_state.get(f"cluster_ai_call_logs:{selected_cluster}", None)
     if isinstance(call_logs, list) and call_logs:
         st.markdown("**本次 AI 调用记录**")
-        st.dataframe(pd.DataFrame(call_logs), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
 
     include_items = _normalize_topic_items(result.get("include_topics"))
     unsure_items = _normalize_topic_items(result.get("unsure_topics"))
@@ -342,7 +342,7 @@ def _render_ai_section(
         st.markdown("**include（建议加入）**")
         st.dataframe(
             pd.DataFrame(include_items).sort_values(by=["count"], ascending=False).head(300),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -352,7 +352,7 @@ def _render_ai_section(
         st.markdown("**unsure（不确定）**")
         st.dataframe(
             pd.DataFrame(unsure_items).sort_values(by=["count"], ascending=False).head(300),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -360,7 +360,7 @@ def _render_ai_section(
         st.markdown("**exclude（不加入）**")
         st.dataframe(
             pd.DataFrame(exclude_items).sort_values(by=["count"], ascending=False).head(300),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -373,4 +373,3 @@ def _render_ai_section(
         count_by_topic=count_by_topic,
         name_by_key=name_by_key,
     )
-

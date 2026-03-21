@@ -184,7 +184,7 @@ def _render_current_member_list(current_topics: list[str]) -> None:
     if current_topics:
         st.dataframe(
             pd.DataFrame({"topic_key": current_topics}).head(500),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -272,4 +272,3 @@ def show_topic_cluster_admin(
 
 
 __all__ = ["show_topic_cluster_admin"]
-

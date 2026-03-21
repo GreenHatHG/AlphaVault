@@ -264,7 +264,7 @@ def _render_top_assets(
                 "url",
             ]
         ].rename(columns={group_col: group_label}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "url": st.column_config.LinkColumn("链接", display_text="打开"),
@@ -327,7 +327,7 @@ def _render_trade_matrix(
     )
     st.dataframe(
         matrix.reset_index().rename(columns={group_col: group_label}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
