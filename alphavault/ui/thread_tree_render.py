@@ -12,6 +12,7 @@ import pandas as pd
 
 from alphavault.ui.thread_tree_parse import (
     _content_key_for_compare,
+    _extract_speaker_name,
     _to_one_line_text,
     parse_display_md_segments,
     strip_csv_raw_fields,
@@ -98,11 +99,146 @@ def _ascii_node_main_content(node_id: str, *, nodes: dict[str, dict]) -> str:
     return text
 
 
+def _segment_dedup_key(text: str, *, author_hint: str = "") -> str:
+    """
+    Build a stable key for comparing content across:
+    - real node lines (with ID)
+    - virtual '[回复]' lines (from display_md segments)
+
+    Key = "speaker|content_key" (speaker optional).
+    """
+    s = str(text or "").strip()
+    if not s:
+        return ""
+
+    speaker = str(_extract_speaker_name(s) or "").strip()
+    if not speaker:
+        speaker = str(author_hint or "").strip()
+
+    content_key = _content_key_for_compare(s, author_hint=speaker)
+    if not content_key:
+        return ""
+
+    return f"{speaker}|{content_key}" if speaker else content_key
+
+
+def _subtree_ids(root_id: str, *, children: dict[str, list[str]]) -> set[str]:
+    stack = [str(root_id or "").strip()]
+    out: set[str] = set()
+    while stack:
+        nid = str(stack.pop() or "").strip()
+        if not nid or nid in out:
+            continue
+        out.add(nid)
+        stack.extend(children.get(nid, []))
+    return out
+
+
+def _build_real_node_key_set(
+    root_id: str,
+    *,
+    nodes: dict[str, dict],
+    children: dict[str, list[str]],
+) -> set[str]:
+    keys: set[str] = set()
+    subtree = _subtree_ids(root_id, children=children)
+    for node_id in subtree:
+        node = nodes.get(node_id) or {}
+        author = str(node.get("author") or "").strip()
+        main = _ascii_node_main_content(node_id, nodes=nodes)
+        key = _segment_dedup_key(main, author_hint=author)
+        if key:
+            keys.add(key)
+    return keys
+
+
+class _VirtualTrieNode:
+    def __init__(self) -> None:
+        self.virtual_children: dict[str, _VirtualTrieNode] = {}
+        self.order: list[tuple[str, str]] = []
+
+    def get_or_create_virtual(self, label: str) -> _VirtualTrieNode:
+        key = str(label or "").strip()
+        if not key:
+            return self
+        child = self.virtual_children.get(key)
+        if child is not None:
+            return child
+        child = _VirtualTrieNode()
+        self.virtual_children[key] = child
+        self.order.append(("virtual", key))
+        return child
+
+    def add_real_leaf(self, node_id: str) -> None:
+        nid = str(node_id or "").strip()
+        if not nid:
+            return
+        self.order.append(("real", nid))
+
+
+def _ascii_render_virtual_trie(
+    trie: _VirtualTrieNode,
+    prefix: str,
+    *,
+    nodes: dict[str, dict],
+    children: dict[str, list[str]],
+    lines: list[str],
+    order: list[str],
+    visited: set[str],
+    real_line_by_id: dict[str, str],
+    dedup_real_keys: set[str] | None,
+) -> None:
+    entries = trie.order
+    for idx, (kind, key) in enumerate(entries):
+        is_last = idx == len(entries) - 1
+        branch = "└── " if is_last else "├── "
+        extension = "    " if is_last else "│   "
+
+        if kind == "virtual":
+            lines.append(prefix + branch + key)
+            child_trie = trie.virtual_children.get(key)
+            if child_trie is None:
+                continue
+            _ascii_render_virtual_trie(
+                child_trie,
+                prefix + extension,
+                nodes=nodes,
+                children=children,
+                lines=lines,
+                order=order,
+                visited=visited,
+                real_line_by_id=real_line_by_id,
+                dedup_real_keys=dedup_real_keys,
+            )
+            continue
+
+        child_id = key
+        if child_id in visited:
+            lines.append(prefix + branch + _ascii_node_line(child_id, nodes=nodes) + " （循环）")
+            continue
+
+        visited.add(child_id)
+        order.append(child_id)
+        real_line = real_line_by_id.get(child_id) or _ascii_node_line(child_id, nodes=nodes)
+        lines.append(prefix + branch + real_line)
+        _ascii_render_children(
+            child_id,
+            prefix + extension,
+            nodes=nodes,
+            children=children,
+            lines=lines,
+            order=order,
+            visited=visited,
+            dedup_real_keys=dedup_real_keys,
+        )
+
+
 def _ascii_expand_edge(
     parent_id: str,
     child_id: str,
     *,
     nodes: dict[str, dict],
+    dedup_real_keys: set[str] | None = None,
 ) -> tuple[list[str], str]:
     parent_node = nodes.get(parent_id) or {}
     child_node = nodes.get(child_id) or {}
@@ -123,11 +259,26 @@ def _ascii_expand_edge(
 
     if not child_segments:
         return [], _ascii_node_line(child_id, nodes=nodes)
+    last_seg = child_segments[-1]
     if len(child_segments) == 1:
-        return [], _ascii_node_line(child_id, nodes=nodes, text_override=child_segments[-1])
+        return [], _ascii_node_line(child_id, nodes=nodes, text_override=last_seg)
 
-    virtual_lines = [f"[{VIRTUAL_NODE_LABEL}] {seg}" for seg in child_segments[:-1]]
-    real_line = _ascii_node_line(child_id, nodes=nodes, text_override=child_segments[-1])
+    virtual_segments = child_segments[:-1]
+    if dedup_real_keys and virtual_segments:
+        child_author = str(child_node.get("author") or "").strip()
+        filtered: list[str] = []
+        for seg in virtual_segments:
+            key = _segment_dedup_key(seg, author_hint=child_author)
+            if key and key in dedup_real_keys:
+                continue
+            filtered.append(seg)
+        virtual_segments = filtered
+
+    if not virtual_segments:
+        return [], _ascii_node_line(child_id, nodes=nodes, text_override=last_seg)
+
+    virtual_lines = [f"[{VIRTUAL_NODE_LABEL}] {seg}" for seg in virtual_segments]
+    real_line = _ascii_node_line(child_id, nodes=nodes, text_override=last_seg)
     return virtual_lines, real_line
 
 
@@ -140,29 +291,38 @@ def _ascii_render_children(
     lines: list[str],
     order: list[str],
     visited: set[str],
+    dedup_real_keys: set[str] | None = None,
 ) -> None:
     child_ids = children.get(parent_id, [])
-    for idx, child_id in enumerate(child_ids):
-        is_last = idx == len(child_ids) - 1
-        branch = "└── " if is_last else "├── "
-        extension = "    " if is_last else "│   "
-        if child_id in visited:
-            lines.append(prefix + branch + _ascii_node_line(child_id, nodes=nodes) + " （循环）")
-            continue
-        visited.add(child_id)
-        order.append(child_id)
-        virtual_lines, real_line = _ascii_expand_edge(parent_id, child_id, nodes=nodes)
-        if not virtual_lines:
-            lines.append(prefix + branch + real_line)
-            _ascii_render_children(child_id, prefix + extension, nodes=nodes, children=children, lines=lines, order=order, visited=visited)
-            continue
-        lines.append(prefix + branch + virtual_lines[0])
-        nested_prefix = prefix + extension
-        for v in virtual_lines[1:]:
-            lines.append(nested_prefix + "└── " + v)
-            nested_prefix += "    "
-        lines.append(nested_prefix + "└── " + real_line)
-        _ascii_render_children(child_id, nested_prefix + "    ", nodes=nodes, children=children, lines=lines, order=order, visited=visited)
+    if not child_ids:
+        return
+
+    trie = _VirtualTrieNode()
+    real_line_by_id: dict[str, str] = {}
+    for child_id in child_ids:
+        virtual_lines, real_line = _ascii_expand_edge(
+            parent_id,
+            child_id,
+            nodes=nodes,
+            dedup_real_keys=dedup_real_keys,
+        )
+        real_line_by_id[child_id] = real_line
+        node = trie
+        for v in virtual_lines:
+            node = node.get_or_create_virtual(v)
+        node.add_real_leaf(child_id)
+
+    _ascii_render_virtual_trie(
+        trie,
+        prefix,
+        nodes=nodes,
+        children=children,
+        lines=lines,
+        order=order,
+        visited=visited,
+        real_line_by_id=real_line_by_id,
+        dedup_real_keys=dedup_real_keys,
+    )
 
 
 def _render_ascii_tree(
@@ -180,6 +340,7 @@ def _render_ascii_tree(
     lines: list[str] = []
     order: list[str] = []
     visited: set[str] = set()
+    dedup_real_keys = _build_real_node_key_set(root_id, nodes=nodes, children=children)
 
     lines.append(_ascii_node_line(root_id, nodes=nodes))
     order.append(root_id)
@@ -193,6 +354,7 @@ def _render_ascii_tree(
         lines=lines,
         order=order,
         visited=visited,
+        dedup_real_keys=dedup_real_keys,
     )
     return "\n".join(lines), order
 
