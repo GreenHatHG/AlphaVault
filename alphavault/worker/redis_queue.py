@@ -135,6 +135,38 @@ def _redis_push(client, queue_key: str, payload: Dict[str, Any]) -> None:
     client.lpush(queue_key, json.dumps(payload, ensure_ascii=False))
 
 
+def _ack_and_cleanup(
+    client,
+    queue_key: str,
+    *,
+    msg: str,
+    post_uid: str,
+    spool_dir: Path,
+    verbose: bool,
+) -> bool:
+    """
+    Ack a message and cleanup local state.
+
+    Keep behavior the same as the old inline code:
+    - Ack failure => return False (caller decides return value).
+    - dedup key deletion is best-effort (ignore errors).
+    - spool_delete errors are NOT swallowed (raise).
+    """
+    try:
+        _redis_ack_processing(client, queue_key, msg)
+        try:
+            client.delete(_redis_dedup_key(queue_key, post_uid))
+        except Exception:
+            pass
+    except Exception as e:
+        if verbose:
+            print(f"[redis] ack_error {type(e).__name__}: {e}", flush=True)
+        return False
+
+    spool_delete(spool_dir, post_uid)
+    return True
+
+
 def flush_redis_to_turso(
     *,
     client,
@@ -201,17 +233,15 @@ def flush_redis_to_turso(
         if skip_upsert:
             if verbose:
                 print(f"[redis] skip_upsert {post_uid}", flush=True)
-            try:
-                _redis_ack_processing(client, queue_key, msg)
-                try:
-                    client.delete(_redis_dedup_key(queue_key, post_uid))
-                except Exception:
-                    pass
-            except Exception as e:
-                if verbose:
-                    print(f"[redis] ack_error {type(e).__name__}: {e}", flush=True)
+            if not _ack_and_cleanup(
+                client,
+                queue_key,
+                msg=msg,
+                post_uid=post_uid,
+                spool_dir=spool_dir,
+                verbose=verbose,
+            ):
                 return processed, False
-            spool_delete(spool_dir, post_uid)
             processed += 1
             continue
 
@@ -239,16 +269,14 @@ def flush_redis_to_turso(
                 print(f"[redis] turso_write_error {type(e).__name__}: {e}", flush=True)
             # Leave message in processing; next tick will requeue.
             return processed, True
-        try:
-            _redis_ack_processing(client, queue_key, msg)
-            try:
-                client.delete(_redis_dedup_key(queue_key, post_uid))
-            except Exception:
-                pass
-        except Exception as e:
-            if verbose:
-                print(f"[redis] ack_error {type(e).__name__}: {e}", flush=True)
+        if not _ack_and_cleanup(
+            client,
+            queue_key,
+            msg=msg,
+            post_uid=post_uid,
+            spool_dir=spool_dir,
+            verbose=verbose,
+        ):
             return processed, False
-        spool_delete(spool_dir, post_uid)
         processed += 1
     return processed, False

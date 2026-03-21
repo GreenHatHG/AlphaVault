@@ -23,6 +23,19 @@ from alphavault.worker.redis_queue import DEFAULT_REDIS_DEDUP_TTL_SECONDS, redis
 from alphavault.worker.spool import spool_delete, spool_write
 
 
+def _try_push_to_redis(redis_client, redis_queue_key: str, *, post_uid: str, payload: Dict[str, Any], verbose: bool) -> bool:
+    if not redis_client or not redis_queue_key or not post_uid:
+        return False
+    return redis_try_push_dedup(
+        redis_client,
+        redis_queue_key,
+        post_uid=post_uid,
+        payload=payload,
+        ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+        verbose=bool(verbose),
+    )
+
+
 def ingest_rss_many_once(
     *,
     rss_urls: list[str],
@@ -102,15 +115,13 @@ def ingest_rss_many_once(
                 print(f"[spool] write_error {post_uid} {type(e).__name__}: {e}", flush=True)
 
             if engine is None:
-                if redis_client and redis_queue_key:
-                    redis_try_push_dedup(
-                        redis_client,
-                        redis_queue_key,
-                        post_uid=post_uid,
-                        payload=payload,
-                        ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
-                        verbose=bool(verbose),
-                    )
+                _try_push_to_redis(
+                    redis_client,
+                    redis_queue_key,
+                    post_uid=post_uid,
+                    payload=payload,
+                    verbose=bool(verbose),
+                )
                 continue
 
             try:
@@ -133,15 +144,13 @@ def ingest_rss_many_once(
                     print(f"[rss] inserted {post_uid}", flush=True)
             except Exception as e:
                 turso_error = True
-                if redis_client and redis_queue_key:
-                    redis_try_push_dedup(
-                        redis_client,
-                        redis_queue_key,
-                        post_uid=post_uid,
-                        payload=payload,
-                        ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
-                        verbose=bool(verbose),
-                    )
+                _try_push_to_redis(
+                    redis_client,
+                    redis_queue_key,
+                    post_uid=post_uid,
+                    payload=payload,
+                    verbose=bool(verbose),
+                )
                 if verbose:
                     print(f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e}", flush=True)
 
