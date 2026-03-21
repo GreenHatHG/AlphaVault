@@ -7,31 +7,15 @@ This module groups the smaller tabs to keep files under control.
 """
 
 from datetime import datetime, timedelta
-import math
 import re
 
 import pandas as pd
 import streamlit as st
 
+from alphavault.ui.keyword_or import split_keywords_or
 from alphavault.ui.thread_tree import build_weibo_thread_forest
+from alphavault.ui.thread_tree_view import render_thread_forest
 from alphavault.weibo.display import format_weibo_display_md
-
-
-def _split_keywords_or(text: str) -> list[str]:
-    raw = str(text or "").strip()
-    if not raw:
-        return []
-    raw = raw.replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",")
-    parts = re.split(r"[,\s]+", raw)
-    out: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        word = str(part or "").strip()
-        if not word or word in seen:
-            continue
-        seen.add(word)
-        out.append(word)
-    return out
 
 
 def show_topic_timeline(
@@ -87,7 +71,7 @@ def show_topic_timeline(
             height=80,
             key=f"timeline_keyword_or:{group_col}:{selected_key}",
         )
-        words = _split_keywords_or(keywords_text)
+        words = split_keywords_or(keywords_text)
         if words:
             escaped = [re.escape(w) for w in words]
             pattern = "|".join(escaped)
@@ -113,52 +97,11 @@ def show_topic_timeline(
 
     threads_all = build_weibo_thread_forest(view_df, posts_all=posts_all)
 
-    st.markdown("**tree（像 1.txt 那样）**")
-    if not threads_all:
-        st.info("当前筛选下，没有可用的 tree。")
-        return
-
-    max_threads = 1000
-    threads = threads_all[:max_threads]
-    total = len(threads)
-    if total <= 0:
-        st.info("当前筛选下，没有可用的 tree。")
-        return
-
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        page_size = int(
-            st.number_input(
-                "一页多少棵",
-                min_value=1,
-                max_value=50,
-                value=10,
-                step=1,
-            )
-        )
-    total_pages = max(1, int(math.ceil(total / max(1, page_size))))
-    with col2:
-        page = st.selectbox("第几页", list(range(1, total_pages + 1)))
-    with col3:
-        st.caption(f"共有 {total} 棵（最多展示前 {max_threads} 棵）")
-
-    start_idx = (int(page) - 1) * page_size
-    end_idx = min(start_idx + page_size, total)
-    st.caption(f"本页：{start_idx + 1} - {end_idx}")
-
-    for i in range(start_idx, end_idx):
-        thread = threads[i]
-        label = str(thread.get("label") or "").strip() or str(thread.get("root_id") or "").strip() or "tree"
-        st.markdown(f"**{i + 1}. {label}**")
-
-        tree_text = str(thread.get("tree_text") or "").rstrip()
-        if tree_text.strip():
-            st.code(tree_text, language="text")
-        else:
-            st.info("tree 为空。")
-
-        if i + 1 < end_idx:
-            st.divider()
+    render_thread_forest(
+        threads_all,
+        title="tree（像 1.txt 那样）",
+        key_prefix=f"topic_timeline_tree:{group_col}:{selected_key}",
+    )
 
 
 def show_learning_library(assertions_filtered: pd.DataFrame) -> None:

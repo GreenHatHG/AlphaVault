@@ -23,6 +23,7 @@ from alphavault.ui.tab_misc import (
     show_tables,
     show_topic_timeline,
 )
+from alphavault.ui.tab_follow_pages import show_follow_pages
 from alphavault.ui.tab_overview import show_kpis, show_overview_charts
 from alphavault.ui.tab_risk import show_risk_radar
 from alphavault.ui.tab_trade import show_trade_flow
@@ -123,6 +124,7 @@ def main() -> None:
             "交易流",
             "风险雷达",
             "主题时间线",
+            "关注页",
             "主题聚合",
             "学习库",
             "冲突/变化",
@@ -163,6 +165,15 @@ def main() -> None:
         )
 
     with tabs[4]:
+        show_follow_pages(
+            turso_url=turso_url,
+            turso_token=turso_token,
+            posts_all=posts,
+            assertions_filtered=assertions_filtered,
+            clusters=clusters_df,
+        )
+
+    with tabs[5]:
         engine = ensure_turso_engine(turso_url, turso_token)
         show_topic_cluster_admin(
             engine=engine,
@@ -172,17 +183,17 @@ def main() -> None:
             load_error=cluster_load_error,
         )
 
-    with tabs[5]:
+    with tabs[6]:
         show_learning_library(assertions_filtered)
 
-    with tabs[6]:
+    with tabs[7]:
         show_conflicts_and_changes(
             assertions_filtered,
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
 
-    with tabs[7]:
+    with tabs[8]:
         show_tables(
             posts_filtered,
             assertions_filtered,
