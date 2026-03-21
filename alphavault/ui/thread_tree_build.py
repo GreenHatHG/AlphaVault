@@ -36,6 +36,16 @@ def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
     return selected_ids
 
 
+def _collect_blogger_authors(selected_ids: set[str], *, nodes: dict[str, dict]) -> set[str]:
+    authors: set[str] = set()
+    for post_id in selected_ids:
+        node = nodes.get(str(post_id)) or {}
+        author = str(node.get("author") or "").strip()
+        if author:
+            authors.add(author)
+    return authors
+
+
 def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
     base_cols = [
         "post_uid",
@@ -427,10 +437,16 @@ def _build_thread(
     *,
     nodes: dict[str, dict],
     children: dict[str, list[str]],
+    blogger_authors: set[str],
 ) -> dict:
     subtree = _subtree_ids(root_id, children=children)
     latest = _latest_activity(subtree, nodes=nodes)
-    tree_text, order = _render_ascii_tree(root_id, nodes=nodes, children=children)
+    tree_text, order = _render_ascii_tree(
+        root_id,
+        nodes=nodes,
+        children=children,
+        blogger_authors=blogger_authors,
+    )
     label = _thread_label(root_id, nodes=nodes, children=children)
     return {
         "root_id": root_id,
@@ -467,9 +483,18 @@ def build_weibo_thread_forest(view_df: pd.DataFrame, *, posts_all: pd.DataFrame)
     nodes = _build_nodes(posts, assertions_by_post=assertions_by_post, synthetic_sources=synthetic_sources)
     _ensure_parent_stubs(nodes)
     children = _build_children_map(nodes)
+    blogger_authors = _collect_blogger_authors(selected_ids, nodes=nodes)
 
     roots = _collect_relevant_roots(selected_ids, nodes=nodes)
-    threads = [_build_thread(root_id, nodes=nodes, children=children) for root_id in roots]
+    threads = [
+        _build_thread(
+            root_id,
+            nodes=nodes,
+            children=children,
+            blogger_authors=blogger_authors,
+        )
+        for root_id in roots
+    ]
     threads.sort(
         key=lambda item: item.get("latest_activity")
         if item.get("latest_activity") is not None
@@ -480,4 +505,3 @@ def build_weibo_thread_forest(view_df: pd.DataFrame, *, posts_all: pd.DataFrame)
 
 
 __all__ = ["build_weibo_thread_forest"]
-
