@@ -77,6 +77,7 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
     engine = ensure_turso_engine(db_url, auth_token)
     post_cols = table_columns(engine, "posts")
     display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
+    assertion_cols = table_columns(engine, "assertions")
     posts_query = """
 	        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
 	               {display_expr},
@@ -85,7 +86,28 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
 	        WHERE processed_at IS NOT NULL
 	    """
     posts_query = posts_query.format(display_expr=display_expr)
-    assertions_query = "SELECT * FROM assertions"
+    wanted_assertion_cols = [
+        "post_uid",
+        "idx",
+        "topic_key",
+        "action",
+        "action_strength",
+        "summary",
+        "evidence",
+        "confidence",
+        "stock_codes_json",
+        "stock_names_json",
+        "industries_json",
+        "commodities_json",
+        "indices_json",
+        "author",
+        "created_at",
+    ]
+    selected_assertion_cols = [col for col in wanted_assertion_cols if col in assertion_cols]
+    if selected_assertion_cols:
+        assertions_query = f"SELECT {', '.join(selected_assertion_cols)} FROM assertions"
+    else:
+        assertions_query = "SELECT * FROM assertions"
     posts = pd.read_sql_query(posts_query, engine)
     assertions = pd.read_sql_query(assertions_query, engine)
     return posts, assertions
