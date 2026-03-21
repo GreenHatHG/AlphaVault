@@ -141,6 +141,139 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
 
+def _build_updates(rows: list[dict]) -> tuple[list[dict], set[str]]:
+    updates: list[dict] = []
+    found_uids: set[str] = set()
+    for row in rows:
+        post_uid = str(row.get("post_uid") or "").strip()
+        author = str(row.get("author") or "").strip()
+        raw_text = str(row.get("raw_text") or "")
+        if not post_uid:
+            continue
+        display_md = format_weibo_display_md(raw_text, author=author)
+        updates.append({"post_uid": post_uid, "display_md": display_md})
+        found_uids.add(post_uid)
+    return updates, found_uids
+
+
+def _update_batch(conn, *, updates: list[dict], overwrite: bool) -> int:
+    query = """
+        UPDATE posts
+        SET display_md = :display_md
+        WHERE post_uid = :post_uid
+        """
+    if not overwrite:
+        query = (
+            query
+            + """
+              AND (display_md IS NULL OR TRIM(display_md) = '')
+            """
+        )
+
+    updated = 0
+    for item in updates:
+        res = conn.execute(text(query), item)
+        updated += int(res.rowcount or 0)
+    return updated
+
+
+def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry_run: bool, sleep_sec: float, verbose: bool) -> None:
+    processed = 0
+    updated = 0
+    found_uids: set[str] = set()
+
+    with engine.connect() as conn:
+        total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
+
+    print(f"[backfill] start total_posts={total_posts} target={len(post_uids)} overwrite=True by_post_uids=True")
+
+    for chunk in _chunks(post_uids, batch_size):
+        with engine.connect() as conn:
+            rows = _select_rows_by_post_uids(conn, chunk)
+
+        updates, found_this_batch = _build_updates(rows)
+        found_uids.update(found_this_batch)
+        processed += len(rows)
+
+        if dry_run:
+            print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
+            continue
+
+        with engine.begin() as conn:
+            updated_this_batch = _update_batch(conn, updates=updates, overwrite=True)
+        updated += updated_this_batch
+        print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
+
+        if sleep_sec > 0:
+            time.sleep(float(sleep_sec))
+
+    missing = [uid for uid in post_uids if uid not in found_uids]
+    if missing and verbose:
+        head = ", ".join(missing[:10])
+        tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
+        print(f"[backfill] missing_post_uids={len(missing)} {head}{tail}")
+
+    print(f"[backfill] done updated={updated} processed={processed} target={len(post_uids)}")
+
+
+def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, overwrite: bool, dry_run: bool, verbose: bool) -> None:
+    processed = 0
+    updated = 0
+    last_post_uid = ""
+
+    with engine.connect() as conn:
+        total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
+        target_total = _count_targets(conn, overwrite=bool(overwrite))
+        stop_post_uid = _max_target_post_uid(conn, overwrite=bool(overwrite))
+
+    if not stop_post_uid or target_total <= 0:
+        print(f"[backfill] nothing_to_do total_posts={total_posts} target={target_total}")
+        return
+
+    print(f"[backfill] start total_posts={total_posts} target={target_total} overwrite={bool(overwrite)}")
+
+    while True:
+        remaining = None
+        if limit > 0:
+            remaining = max(0, int(limit) - processed)
+            if remaining <= 0:
+                break
+
+        with engine.connect() as conn:
+            effective_batch_size = int(batch_size)
+            if remaining is not None:
+                effective_batch_size = min(effective_batch_size, remaining)
+            rows = _select_batch(
+                conn,
+                batch_size=effective_batch_size,
+                overwrite=bool(overwrite),
+                last_post_uid=last_post_uid,
+                stop_post_uid=stop_post_uid,
+            )
+
+        if not rows:
+            break
+
+        updates, _found = _build_updates(rows)
+
+        last_row = rows[-1]
+        last_post_uid = str(last_row.get("post_uid") or last_post_uid)
+        processed += len(rows)
+
+        if dry_run:
+            print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
+        else:
+            with engine.begin() as conn:
+                updated_this_batch = _update_batch(conn, updates=updates, overwrite=bool(overwrite))
+            updated += updated_this_batch
+            print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
+
+        if sleep_sec > 0:
+            time.sleep(float(sleep_sec))
+
+    print(f"[backfill] done updated={updated} processed={processed}")
+
+
 def main() -> None:
     args = parse_args()
     engine = get_turso_engine_from_env()
@@ -149,166 +282,25 @@ def main() -> None:
 
     post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
     if post_uids:
-        processed = 0
-        updated = 0
-        found_uids: set[str] = set()
-
-        with engine.connect() as conn:
-            total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
-
-        print(
-            f"[backfill] start total_posts={total_posts} target={len(post_uids)} "
-            f"overwrite=True by_post_uids=True"
+        _backfill_by_post_uids(
+            engine,
+            post_uids=post_uids,
+            batch_size=max(1, int(args.batch_size)),
+            dry_run=bool(args.dry_run),
+            sleep_sec=float(args.sleep_sec or 0.0),
+            verbose=bool(args.verbose),
         )
-
-        batch_size = max(1, int(args.batch_size))
-        for chunk in _chunks(post_uids, batch_size):
-            with engine.connect() as conn:
-                rows = _select_rows_by_post_uids(conn, chunk)
-
-            updates: list[dict] = []
-            for row in rows:
-                post_uid = str(row.get("post_uid") or "").strip()
-                author = str(row.get("author") or "").strip()
-                raw_text = str(row.get("raw_text") or "")
-                if not post_uid:
-                    continue
-                display_md = format_weibo_display_md(raw_text, author=author)
-                updates.append({"post_uid": post_uid, "display_md": display_md})
-                found_uids.add(post_uid)
-
-            processed += len(rows)
-
-            if args.dry_run:
-                print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
-                continue
-
-            with engine.begin() as conn:
-                updated_this_batch = 0
-                for item in updates:
-                    res = conn.execute(
-                        text(
-                            """
-                            UPDATE posts
-                            SET display_md = :display_md
-                            WHERE post_uid = :post_uid
-                            """
-                        ),
-                        item,
-                    )
-                    updated_this_batch += int(res.rowcount or 0)
-            updated += updated_this_batch
-            print(
-                f"[backfill] batch updated={updated_this_batch} "
-                f"total_updated={updated} total_processed={processed}"
-            )
-
-            if float(args.sleep_sec or 0.0) > 0:
-                time.sleep(float(args.sleep_sec))
-
-        missing = [uid for uid in post_uids if uid not in found_uids]
-        if missing and bool(args.verbose):
-            head = ", ".join(missing[:10])
-            tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
-            print(f"[backfill] missing_post_uids={len(missing)} {head}{tail}")
-
-        print(f"[backfill] done updated={updated} processed={processed} target={len(post_uids)}")
         return
 
-    processed = 0
-    updated = 0
-
-    last_post_uid = ""
-    stop_post_uid = ""
-    with engine.connect() as conn:
-        total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
-        target_total = _count_targets(conn, overwrite=bool(args.overwrite))
-        stop_post_uid = _max_target_post_uid(conn, overwrite=bool(args.overwrite))
-
-    if not stop_post_uid or target_total <= 0:
-        print(f"[backfill] nothing_to_do total_posts={total_posts} target={target_total}")
-        return
-
-    print(f"[backfill] start total_posts={total_posts} target={target_total} overwrite={bool(args.overwrite)}")
-
-    while True:
-        remaining = None
-        if int(args.limit or 0) > 0:
-            remaining = max(0, int(args.limit) - processed)
-            if remaining <= 0:
-                break
-
-        with engine.connect() as conn:
-            batch_size = int(args.batch_size)
-            if remaining is not None:
-                batch_size = min(batch_size, remaining)
-            rows = _select_batch(
-                conn,
-                batch_size=batch_size,
-                overwrite=bool(args.overwrite),
-                last_post_uid=last_post_uid,
-                stop_post_uid=stop_post_uid,
-            )
-
-        if not rows:
-            break
-
-        updates: list[dict] = []
-        for row in rows:
-            post_uid = str(row.get("post_uid") or "").strip()
-            author = str(row.get("author") or "").strip()
-            raw_text = str(row.get("raw_text") or "")
-            if not post_uid:
-                continue
-            display_md = format_weibo_display_md(raw_text, author=author)
-            updates.append({"post_uid": post_uid, "display_md": display_md})
-
-        # advance cursor (works for both overwrite and non-overwrite, including dry-run)
-        last_row = rows[-1]
-        last_post_uid = str(last_row.get("post_uid") or last_post_uid)
-
-        processed += len(rows)
-
-        if args.dry_run:
-            print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
-        else:
-            with engine.begin() as conn:
-                updated_this_batch = 0
-                for item in updates:
-                    if bool(args.overwrite):
-                        res = conn.execute(
-                            text(
-                                """
-                                UPDATE posts
-                                SET display_md = :display_md
-                                WHERE post_uid = :post_uid
-                                """
-                            ),
-                            item,
-                        )
-                    else:
-                        res = conn.execute(
-                            text(
-                                """
-                                UPDATE posts
-                                SET display_md = :display_md
-                                WHERE post_uid = :post_uid
-                                  AND (display_md IS NULL OR TRIM(display_md) = '')
-                                """
-                            ),
-                            item,
-                        )
-                    updated_this_batch += int(res.rowcount or 0)
-            updated += updated_this_batch
-            print(
-                f"[backfill] batch updated={updated_this_batch} "
-                f"total_updated={updated} total_processed={processed}"
-            )
-
-        if float(args.sleep_sec or 0.0) > 0:
-            time.sleep(float(args.sleep_sec))
-
-    print(f"[backfill] done updated={updated} processed={processed}")
+    _backfill_scan(
+        engine,
+        batch_size=max(1, int(args.batch_size)),
+        limit=int(args.limit or 0),
+        sleep_sec=float(args.sleep_sec or 0.0),
+        overwrite=bool(args.overwrite),
+        dry_run=bool(args.dry_run),
+        verbose=bool(args.verbose),
+    )
 
 
 if __name__ == "__main__":

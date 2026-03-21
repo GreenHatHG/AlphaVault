@@ -1,5 +1,8 @@
 """Shared constants (env names, defaults)."""
 
+# Datetime format used in DB timestamps and logs.
+DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
+
 # Env var names (keep centralized to avoid typos).
 ENV_SPOOL_DIR = "SPOOL_DIR"
 DEFAULT_SPOOL_DIR = "/tmp/alphavault-spool"

@@ -16,6 +16,7 @@ import feedparser
 import requests
 
 from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
+from alphavault.constants import DATETIME_FMT
 from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
@@ -83,7 +84,7 @@ class RateLimiter:
 
 
 def now_str() -> str:
-    return datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(CST).strftime(DATETIME_FMT)
 
 
 def fetch_feed(url: str, timeout: float) -> feedparser.FeedParserDict:
@@ -115,7 +116,7 @@ def parse_datetime(entry: feedparser.FeedParserDict) -> str:
         parsed = getattr(entry, key, None)
         if parsed:
             dt = datetime(*parsed[:6], tzinfo=timezone.utc).astimezone(CST)
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+            return dt.strftime(DATETIME_FMT)
     return now_str()
 
 
@@ -312,7 +313,7 @@ def sleep_until_active(active_hours: tuple[int, int], *, verbose: bool) -> None:
     sleep_sec = max(1.0, (next_dt - now_dt).total_seconds())
     if verbose:
         print(
-            f"[schedule] inactive now={now_dt.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"[schedule] inactive now={now_dt.strftime(DATETIME_FMT)} "
             f"active={start_hour}-{end_hour} sleep={int(sleep_sec)}s",
             flush=True,
         )

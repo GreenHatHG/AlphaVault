@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from alphavault.constants import DATETIME_FMT
 from alphavault.db.turso_db import (
     TOPIC_CLUSTER_POST_OVERRIDES_TABLE,
     TOPIC_CLUSTER_TOPICS_TABLE,
@@ -21,7 +22,7 @@ UNCATEGORIZED_LABEL = "未归类"
 
 def _now_str() -> str:
     # Keep the same shape as rss_utils.now_str() (YYYY-MM-DD HH:MM:SS).
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime(DATETIME_FMT)
 
 
 def ensure_cluster_schema(engine: Engine) -> None:

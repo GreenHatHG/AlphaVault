@@ -48,15 +48,23 @@ def trade_action_badge(action: str, strength: object) -> str:
     return "·"
 
 
-def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
-    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
+def _trade_group_col(assertions_filtered: pd.DataFrame, group_col: str) -> str:
+    return group_col if group_col in assertions_filtered.columns else "topic_key"
+
+
+def _filter_trade_df(assertions_filtered: pd.DataFrame) -> pd.DataFrame:
+    if assertions_filtered.empty or "action" not in assertions_filtered.columns:
+        return pd.DataFrame()
     trade_mask = assertions_filtered["action"].str.startswith("trade.", na=False)
-    trade_df = assertions_filtered[trade_mask].copy()
+    return assertions_filtered[trade_mask].copy()
 
-    if trade_df.empty:
-        st.info("当前筛选下没有交易类观点。")
-        return
 
+def _render_recent_trade_flow(
+    trade_df: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+) -> None:
     st.markdown("**最近交易流（按时间倒序）**")
     trade_view = trade_df.sort_values(by="created_at", ascending=False)
     show_raw_col = st.checkbox(
@@ -88,9 +96,8 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
     display_df = display_df.rename(columns=rename_map)
     st.dataframe(display_df, width="stretch", hide_index=True)
 
-    st.divider()
-    st.markdown("**作业板（抄作业用，一眼看懂）**")
 
+def _trade_board_settings() -> tuple[int, str, int, int]:
     col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
     with col_a:
         window_days = st.slider(
@@ -130,35 +137,42 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
                 key="trade_board_max_authors",
             )
         )
+    return int(window_days), str(sort_mode), int(max_assets), int(max_authors)
 
+
+def _prepare_trade_board_df(
+    trade_df: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+    window_days: int,
+) -> tuple[pd.DataFrame, datetime] | None:
     board_df = trade_df.dropna(subset=["created_at"]).copy()
     board_df = board_df[board_df[group_col].astype(str).str.strip().ne("")].copy()
     if board_df.empty:
         st.info(f"没有可用的数据（{group_label}/created_at 为空）。")
-        return
+        return None
 
     max_ts = board_df["created_at"].max()
     cutoff = max_ts - timedelta(days=int(window_days))
     board_df = board_df[board_df["created_at"] >= cutoff].copy()
     if board_df.empty:
         st.info("时间窗内没有交易观点。")
-        return
+        return None
 
-    # Build numeric strength (0~3). (Keep it simple and visible in tables.)
     board_df["strength"] = (
         pd.to_numeric(board_df["action_strength"], errors="coerce")
         .fillna(0)
         .astype(int)
         .clip(lower=0, upper=3)
     )
-    board_df["buy_strength"] = board_df["strength"].where(
-        board_df["action"].isin(TRADE_BUY_ACTIONS), 0
-    )
-    board_df["sell_strength"] = board_df["strength"].where(
-        board_df["action"].isin(TRADE_SELL_ACTIONS), 0
-    )
+    board_df["buy_strength"] = board_df["strength"].where(board_df["action"].isin(TRADE_BUY_ACTIONS), 0)
+    board_df["sell_strength"] = board_df["strength"].where(board_df["action"].isin(TRADE_SELL_ACTIONS), 0)
     board_df["hold_mentions"] = board_df["action"].isin(TRADE_HOLD_ACTIONS).astype(int)
+    return board_df, max_ts
 
+
+def _build_trade_board_agg(board_df: pd.DataFrame, *, group_col: str, max_ts: datetime) -> pd.DataFrame:
     agg = board_df.groupby(group_col, as_index=False).agg(
         买强度=("buy_strength", "sum"),
         卖强度=("sell_strength", "sum"),
@@ -169,10 +183,13 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
     )
     agg["净强度"] = agg["买强度"] - agg["卖强度"]
 
-    last_rows = board_df.sort_values(by="created_at").groupby(group_col).tail(1).set_index(group_col)
-    last_badge = last_rows.apply(
-        lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
+    last_rows = (
+        board_df.sort_values(by="created_at")
+        .groupby(group_col)
+        .tail(1)
+        .set_index(group_col)
     )
+    last_badge = last_rows.apply(lambda row: trade_action_badge(row["action"], row["strength"]), axis=1)
     agg["最近大佬"] = agg[group_col].map(last_rows["author"])
     agg["最近动作"] = agg[group_col].map(last_badge)
     agg["最近摘要"] = (
@@ -197,18 +214,22 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
         "→只看",
     )
     agg["共识"] = consensus
+    return agg
 
+
+def _sort_trade_board_agg(agg: pd.DataFrame, *, sort_mode: str) -> pd.DataFrame:
     if sort_mode == "最新":
-        agg_sorted = agg.sort_values(by="最近时间", ascending=False)
-    elif sort_mode == "大佬最多":
-        agg_sorted = agg.sort_values(by=["大佬数", "提及次数", "最近时间"], ascending=False)
-    else:
-        agg_sorted = (
-            agg.assign(_abs_net=agg["净强度"].abs())
-            .sort_values(by=["_abs_net", "大佬数", "最近时间"], ascending=False)
-            .drop(columns=["_abs_net"])
-        )
+        return agg.sort_values(by="最近时间", ascending=False)
+    if sort_mode == "大佬最多":
+        return agg.sort_values(by=["大佬数", "提及次数", "最近时间"], ascending=False)
+    return (
+        agg.assign(_abs_net=agg["净强度"].abs())
+        .sort_values(by=["_abs_net", "大佬数", "最近时间"], ascending=False)
+        .drop(columns=["_abs_net"])
+    )
 
+
+def _render_trade_kpis(agg_sorted: pd.DataFrame, *, board_df: pd.DataFrame, group_label: str) -> None:
     kpi_left, kpi_mid, kpi_right = st.columns(3)
     kpi_left.metric(f"{group_label}数", f"{len(agg_sorted)}")
     kpi_mid.metric("大佬数", f"{int(board_df['author'].nunique())}")
@@ -217,7 +238,15 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
         f"{int((agg_sorted['共识'].isin(['↑偏买', '↓偏卖'])).sum())}",
     )
 
-    top_assets = agg_sorted.head(max_assets).copy()
+
+def _render_top_assets(
+    agg_sorted: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+    max_assets: int,
+) -> pd.DataFrame:
+    top_assets = agg_sorted.head(int(max_assets)).copy()
     st.dataframe(
         top_assets[
             [
@@ -241,8 +270,10 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
             "url": st.column_config.LinkColumn("链接", display_text="打开"),
         },
     )
+    return top_assets
 
-    st.markdown(f"**作业格（大佬 × {group_label}）**")
+
+def _top_authors(board_df: pd.DataFrame, *, max_authors: int) -> list[str]:
     if "invest_score" in board_df.columns:
         score_series = pd.to_numeric(board_df["invest_score"], errors="coerce").fillna(0.0)
     else:
@@ -255,43 +286,58 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
     )
     author_stats = author_stats[author_stats["author"].astype(str).str.strip().ne("")]
     author_stats = author_stats.sort_values(by=["分数", "提及"], ascending=False)
-    top_author_list = author_stats.head(max_authors)["author"].tolist()
-    top_asset_keys = top_assets[group_col].tolist()
+    return author_stats.head(int(max_authors))["author"].tolist()
 
+
+def _render_trade_matrix(
+    board_df: pd.DataFrame,
+    *,
+    top_asset_keys: list,
+    top_author_list: list[str],
+    group_col: str,
+    group_label: str,
+    max_ts: datetime,
+) -> None:
     if not top_asset_keys:
         st.info(f"没有{group_label}数据。")
         return
 
     if not top_author_list:
         st.info("没有大佬数据（author 为空）。")
-    else:
-        pair_df = board_df[
-            board_df[group_col].isin(top_asset_keys) & board_df["author"].isin(top_author_list)
-        ].copy()
-        if pair_df.empty:
-            st.info("当前条件下，作业格没有数据。")
-        else:
-            pair_last = (
-                pair_df.sort_values(by="created_at").groupby([group_col, "author"]).tail(1).copy()
-            )
-            pair_last["badge"] = pair_last.apply(
-                lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
-            )
-            pair_last["age"] = pair_last["created_at"].apply(lambda ts: format_age_label(max_ts, ts))
-            pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
+        return
 
-            matrix = (
-                pair_last.pivot(index=group_col, columns="author", values="cell")
-                .reindex(index=top_asset_keys, columns=top_author_list)
-                .fillna("")
-            )
-            st.dataframe(
-                matrix.reset_index().rename(columns={group_col: group_label}),
-                use_container_width=True,
-                hide_index=True,
-            )
+    pair_df = board_df[
+        board_df[group_col].isin(top_asset_keys) & board_df["author"].isin(top_author_list)
+    ].copy()
+    if pair_df.empty:
+        st.info("当前条件下，作业格没有数据。")
+        return
 
+    pair_last = pair_df.sort_values(by="created_at").groupby([group_col, "author"]).tail(1).copy()
+    pair_last["badge"] = pair_last.apply(
+        lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
+    )
+    pair_last["age"] = pair_last["created_at"].apply(lambda ts: format_age_label(max_ts, ts))
+    pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
+
+    matrix = (
+        pair_last.pivot(index=group_col, columns="author", values="cell")
+        .reindex(index=top_asset_keys, columns=top_author_list)
+        .fillna("")
+    )
+    st.dataframe(
+        matrix.reset_index().rename(columns={group_col: group_label}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _render_trade_detail(board_df: pd.DataFrame, *, top_asset_keys: list, group_col: str, group_label: str) -> None:
     st.markdown(f"**{group_label}细节（点开看最近几条）**")
+    if not top_asset_keys:
+        st.info(f"没有{group_label}数据。")
+        return
+
     selected_key = st.selectbox(
         f"选择{group_label}",
         options=top_asset_keys,
@@ -308,9 +354,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
     )
     detail_df = board_df[board_df[group_col] == selected_key].copy()
     detail_df = detail_df.sort_values(by="created_at", ascending=False).head(int(detail_n))
-    detail_df["动作"] = detail_df.apply(
-        lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
-    )
+    detail_df["动作"] = detail_df.apply(lambda row: trade_action_badge(row["action"], row["strength"]), axis=1)
     detail_df["原文"] = (
         detail_df["raw_text"]
         .fillna("")
@@ -337,4 +381,55 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
         column_config={
             "url": st.column_config.LinkColumn("链接", display_text="打开"),
         },
+    )
+
+
+def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+    group_col = _trade_group_col(assertions_filtered, group_col)
+    trade_df = _filter_trade_df(assertions_filtered)
+    if trade_df.empty:
+        st.info("当前筛选下没有交易类观点。")
+        return
+    _render_recent_trade_flow(trade_df, group_col=group_col, group_label=group_label)
+
+    st.divider()
+    st.markdown("**作业板（抄作业用，一眼看懂）**")
+
+    window_days, sort_mode, max_assets, max_authors = _trade_board_settings()
+    prepared = _prepare_trade_board_df(
+        trade_df,
+        group_col=group_col,
+        group_label=group_label,
+        window_days=window_days,
+    )
+    if prepared is None:
+        return
+    board_df, max_ts = prepared
+
+    agg = _build_trade_board_agg(board_df, group_col=group_col, max_ts=max_ts)
+    agg_sorted = _sort_trade_board_agg(agg, sort_mode=sort_mode)
+    _render_trade_kpis(agg_sorted, board_df=board_df, group_label=group_label)
+    top_assets = _render_top_assets(
+        agg_sorted,
+        group_col=group_col,
+        group_label=group_label,
+        max_assets=max_assets,
+    )
+
+    st.markdown(f"**作业格（大佬 × {group_label}）**")
+    top_asset_keys = top_assets[group_col].tolist()
+    top_author_list = _top_authors(board_df, max_authors=max_authors)
+    _render_trade_matrix(
+        board_df,
+        top_asset_keys=top_asset_keys,
+        top_author_list=top_author_list,
+        group_col=group_col,
+        group_label=group_label,
+        max_ts=max_ts,
+    )
+    _render_trade_detail(
+        board_df,
+        top_asset_keys=top_asset_keys,
+        group_col=group_col,
+        group_label=group_label,
     )

@@ -15,6 +15,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from alphavault.constants import DATETIME_FMT
+
 
 FOLLOW_PAGES_TABLE = "follow_pages"
 
@@ -25,7 +27,7 @@ ALLOWED_FOLLOW_TYPES = {FOLLOW_TYPE_TOPIC, FOLLOW_TYPE_CLUSTER}
 
 def _now_str() -> str:
     # Keep the same datetime shape used in other modules (YYYY-MM-DD HH:MM:SS).
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime(DATETIME_FMT)
 
 
 def normalize_follow_type(value: object) -> str:
@@ -163,4 +165,3 @@ __all__ = [
     "try_load_follow_pages",
     "upsert_follow_page",
 ]
-

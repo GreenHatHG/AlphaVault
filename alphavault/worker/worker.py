@@ -18,24 +18,13 @@ from alphavault.constants import (
     ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
     ENV_AI_REASONING_EFFORT,
-    ENV_AI_RETRIES,
-    ENV_AI_RPM,
     ENV_AI_STREAM,
     ENV_AI_TEMPERATURE,
-    ENV_AI_TIMEOUT_SEC,
     ENV_AI_TRACE_OUT,
-    ENV_RSS_ACTIVE_HOURS,
-    ENV_RSS_INTERVAL_SECONDS,
-    ENV_RSS_URL,
-    ENV_RSS_URLS,
 )
 from alphavault.ai.analyze import (
-    AI_MODE_COMPLETION,
-    AI_MODE_RESPONSES,
     DEFAULT_AI_MODE,
     DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_AI_RETRY_COUNT,
-    DEFAULT_AI_TEMPERATURE,
     DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
     AnalyzeResult,
@@ -59,12 +48,15 @@ from alphavault.rss.utils import (
     build_analysis_context,
     build_row_meta,
     env_bool,
-    env_float,
-    env_int,
     now_str,
-    parse_active_hours,
-    parse_rss_urls,
     sleep_until_active,
+)
+from alphavault.worker.cli import (
+    _parse_active_hours_from_args,
+    _require_rss_urls,
+    _resolve_interval_seconds,
+    _resolve_worker_threads,
+    parse_args,
 )
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
@@ -234,234 +226,240 @@ def _process_one_post_uid(
         print(f"[llm] error {post_uid} {msg}", flush=True)
 
 
-def parse_args() -> argparse.Namespace:
-    ai_retries_env = env_int(ENV_AI_RETRIES)
-    ai_rpm_env = env_float(ENV_AI_RPM)
-    ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
-    ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
+def _log_spool_and_redis(*, verbose: bool, spool_dir: Path, redis_client, redis_queue_key: str) -> None:
+    if not verbose:
+        return
+    print(f"[spool] dir={spool_dir}", flush=True)
+    if redis_client:
+        print(f"[redis] enabled key={redis_queue_key}", flush=True)
 
-    parser = argparse.ArgumentParser(description="Weibo RSS -> Turso queue -> AI -> Turso")
-    parser.add_argument("--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）")
-    parser.add_argument("--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）")
-    parser.add_argument("--author", default="", help="作者名（为空则从 RSS 里取）")
-    parser.add_argument("--user-id", default="", help="微博用户ID（可为空，自动推断）")
-    parser.add_argument("--active-hours", default="", help="只在这些小时运行（CST），格式: 6-22；为空=全天")
-    parser.add_argument("--limit", type=int, default=0, help="最多处理多少条（0 表示不限）")
-    parser.add_argument("--rss-timeout", type=float, default=15.0, help="RSS HTTP 超时秒数")
-    parser.add_argument("--interval-seconds", type=float, default=0.0, help="轮询间隔（0=读 RSS_INTERVAL_SECONDS 或默认 600）")
-    parser.add_argument("--worker-threads", type=int, default=0, help="后台 AI 线程数（0=自动）")
-    parser.add_argument("--ai-stuck-seconds", type=int, default=600, help="running 超过多久算卡死（秒）")
 
-    # AI config (litellm only; mostly via env)
-    parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
-    parser.add_argument(
-        "--base-url",
-        default=os.getenv(ENV_AI_BASE_URL, "").strip(),
-        help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
+def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> bool:
+    if turso_ready:
+        return True
+    try:
+        ensure_cloud_queue_schema(engine, verbose=bool(verbose))
+        print("[turso] ready", flush=True)
+        return True
+    except Exception as e:
+        if verbose:
+            print(f"[turso] not_ready {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+def _schedule_ai(
+    executor: ThreadPoolExecutor,
+    *,
+    engine: Optional[Engine],
+    worker_threads: int,
+    config: LLMConfig,
+    limiter: RateLimiter,
+    verbose: bool,
+) -> Tuple[int, bool]:
+    if engine is None:
+        return 0, False
+    now_epoch = int(time.time())
+    try:
+        due = select_due_post_uids(
+            engine,
+            now_epoch=now_epoch,
+            limit=max(1, int(worker_threads) * 2),
+        )
+    except Exception as e:
+        if verbose:
+            print(f"[ai] select_due_error {type(e).__name__}: {e}", flush=True)
+        return 0, True
+
+    scheduled = 0
+    for post_uid in due:
+        try:
+            ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
+        except Exception as e:
+            if verbose:
+                print(f"[ai] mark_running_error {type(e).__name__}: {e}", flush=True)
+            return scheduled, True
+        if not ok:
+            continue
+        executor.submit(
+            _process_one_post_uid,
+            engine=engine,
+            post_uid=post_uid,
+            config=config,
+            limiter=limiter,
+        )
+        scheduled += 1
+    return scheduled, False
+
+
+def _run_turso_tick(
+    executor: ThreadPoolExecutor,
+    *,
+    engine: Optional[Engine],
+    spool_dir: Path,
+    redis_client,
+    redis_queue_key: str,
+    worker_threads: int,
+    config: LLMConfig,
+    limiter: RateLimiter,
+    stuck_seconds: int,
+    verbose: bool,
+) -> Tuple[int, int, int, int, bool]:
+    if engine is None:
+        return 0, 0, 0, 0, False
+
+    turso_error = False
+    recovered = 0
+    try:
+        recovered = recover_stuck_ai_tasks(
+            engine,
+            now_epoch=int(time.time()),
+            stuck_seconds=max(60, int(stuck_seconds)),
+            verbose=bool(verbose),
+        )
+        recovered += recover_done_without_processed_at(engine, verbose=bool(verbose))
+    except Exception as e:
+        turso_error = True
+        if verbose:
+            print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
+
+    flushed_redis, flush_redis_error = flush_redis_to_turso(
+        client=redis_client,
+        queue_key=redis_queue_key,
+        spool_dir=spool_dir,
+        engine=engine,
+        max_items=200,
+        verbose=bool(verbose),
     )
-    parser.add_argument("--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）")
-    parser.add_argument(
-        "--api-mode",
-        default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
-        choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
+    flushed_spool, flush_spool_error = flush_spool_to_turso(
+        spool_dir=spool_dir,
+        engine=engine,
+        max_items=200,
+        verbose=bool(verbose),
     )
-    parser.add_argument("--ai-stream", action="store_true")
-    parser.add_argument("--prompt-version", default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION))
-    parser.add_argument(
-        "--ai-retries",
-        type=int,
-        default=ai_retries_env if ai_retries_env is not None else DEFAULT_AI_RETRY_COUNT,
+    scheduled, schedule_error = _schedule_ai(
+        executor,
+        engine=engine,
+        worker_threads=worker_threads,
+        config=config,
+        limiter=limiter,
+        verbose=bool(verbose),
     )
-    parser.add_argument(
-        "--ai-temperature",
-        type=float,
-        default=float(os.getenv(ENV_AI_TEMPERATURE, str(DEFAULT_AI_TEMPERATURE))),
+    turso_error = bool(turso_error or flush_redis_error or flush_spool_error or schedule_error)
+    return recovered, flushed_redis, flushed_spool, scheduled, turso_error
+
+
+def _run_loop_once(
+    executor: ThreadPoolExecutor,
+    *,
+    args: argparse.Namespace,
+    engine: Engine,
+    rss_urls: list[str],
+    spool_dir: Path,
+    redis_client,
+    redis_queue_key: str,
+    limit: Optional[int],
+    worker_threads: int,
+    config: LLMConfig,
+    limiter: RateLimiter,
+    active_hours: Optional[tuple[int, int]],
+    turso_ready: bool,
+) -> Tuple[bool, bool, int, int, int, int, int]:
+    verbose = bool(args.verbose)
+    if active_hours is not None:
+        sleep_until_active(active_hours, verbose=verbose)
+
+    active_engine_used = False
+    if not turso_ready:
+        turso_ready = _ensure_turso_ready(engine=engine, verbose=verbose, turso_ready=turso_ready)
+    active_engine: Optional[Engine] = engine if turso_ready else None
+    active_engine_used = active_engine is not None
+
+    inserted, ingest_turso_error = ingest_rss_many_once(
+        rss_urls=rss_urls,
+        engine=active_engine,
+        spool_dir=spool_dir,
+        redis_client=redis_client,
+        redis_queue_key=redis_queue_key,
+        author=args.author.strip(),
+        user_id=(args.user_id.strip() or None),
+        limit=limit,
+        rss_timeout=float(args.rss_timeout),
+        verbose=verbose,
     )
-    parser.add_argument(
-        "--ai-reasoning-effort",
-        default=os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT),
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
-    )
-    parser.add_argument(
-        "--ai-rpm",
-        type=float,
-        default=ai_rpm_env if ai_rpm_env is not None else 12.0,
-    )
-    parser.add_argument(
-        "--ai-timeout-sec",
-        type=float,
-        default=ai_timeout_env if ai_timeout_env is not None else 1000.0,
-    )
-    parser.add_argument(
-        "--ai-max-inflight",
-        type=int,
-        default=ai_max_inflight_env if ai_max_inflight_env is not None else 12,
-    )
-    parser.add_argument("--trace-out", type=Path, default=None)
-    parser.add_argument("--relevant-threshold", type=float, default=0.35, help="相关度阈值")
-    parser.add_argument("--verbose", action="store_true")
-    return parser.parse_args()
+
+    recovered = 0
+    flushed_redis = 0
+    flushed_spool = 0
+    scheduled = 0
+    turso_error = bool(ingest_turso_error)
+
+    if active_engine is not None:
+        recovered, flushed_redis, flushed_spool, scheduled, tick_error = _run_turso_tick(
+            executor,
+            engine=active_engine,
+            spool_dir=spool_dir,
+            redis_client=redis_client,
+            redis_queue_key=redis_queue_key,
+            worker_threads=worker_threads,
+            config=config,
+            limiter=limiter,
+            stuck_seconds=int(args.ai_stuck_seconds),
+            verbose=verbose,
+        )
+        turso_error = bool(turso_error or tick_error)
+
+    if turso_error:
+        turso_ready = False
+
+    return turso_ready, active_engine_used, inserted, flushed_redis, flushed_spool, recovered, scheduled
 
 
 def main() -> None:
     args = parse_args()
-    rss_urls = parse_rss_urls(args)
-    if not rss_urls:
-        raise RuntimeError(
-            f"Missing RSS url(s). Set {ENV_RSS_URLS}/{ENV_RSS_URL} or pass --rss-url/--rss-urls."
-        )
-    if args.verbose:
-        print(f"[rss] sources={len(rss_urls)}", flush=True)
-
-    active_hours_value = (
-        args.active_hours.strip() if args.active_hours else os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
-    )
-    active_hours = None
-    if active_hours_value:
-        active_hours = parse_active_hours(active_hours_value)
-
-    interval = float(args.interval_seconds or 0.0)
-    if interval <= 0:
-        interval = float(os.getenv(ENV_RSS_INTERVAL_SECONDS, "600") or "600")
-    interval = max(1.0, interval)
-
+    rss_urls = _require_rss_urls(args)
+    active_hours = _parse_active_hours_from_args(args)
+    interval = _resolve_interval_seconds(args)
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
-
-    if args.worker_threads and args.worker_threads > 0:
-        worker_threads = int(args.worker_threads)
-    elif args.ai_max_inflight and args.ai_max_inflight > 0:
-        worker_threads = int(args.ai_max_inflight)
-    else:
-        worker_threads = 4
-    if args.ai_max_inflight and args.ai_max_inflight > 0:
-        worker_threads = min(worker_threads, int(args.ai_max_inflight))
-
+    worker_threads = _resolve_worker_threads(args)
     engine = get_turso_engine_from_env()
-    turso_ready = False
-
     spool_dir = ensure_spool_dir()
     redis_client, redis_queue_key = try_get_redis()
-    if args.verbose:
-        print(f"[spool] dir={spool_dir}", flush=True)
-        if redis_client:
-            print(f"[redis] enabled key={redis_queue_key}", flush=True)
-
-    def _ensure_turso() -> bool:
-        nonlocal turso_ready
-        if turso_ready:
-            return True
-        try:
-            ensure_cloud_queue_schema(engine, verbose=bool(args.verbose))
-            turso_ready = True
-            print("[turso] ready", flush=True)
-            return True
-        except Exception as e:
-            turso_ready = False
-            if args.verbose:
-                print(f"[turso] not_ready {type(e).__name__}: {e}", flush=True)
-            return False
-
-    def _schedule_ai(executor: ThreadPoolExecutor, *, engine: Optional[Engine]) -> Tuple[int, bool]:
-        if engine is None:
-            return 0, False
-        now_epoch = int(time.time())
-        try:
-            due = select_due_post_uids(engine, now_epoch=now_epoch, limit=max(1, worker_threads * 2))
-        except Exception as e:
-            if args.verbose:
-                print(f"[ai] select_due_error {type(e).__name__}: {e}", flush=True)
-            return 0, True
-
-        scheduled = 0
-        for post_uid in due:
-            try:
-                ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
-            except Exception as e:
-                if args.verbose:
-                    print(f"[ai] mark_running_error {type(e).__name__}: {e}", flush=True)
-                return scheduled, True
-            if not ok:
-                continue
-            executor.submit(_process_one_post_uid, engine=engine, post_uid=post_uid, config=config, limiter=limiter)
-            scheduled += 1
-        return scheduled, False
-
+    _log_spool_and_redis(
+        verbose=bool(args.verbose),
+        spool_dir=spool_dir,
+        redis_client=redis_client,
+        redis_queue_key=redis_queue_key,
+    )
     limit = args.limit if args.limit and args.limit > 0 else None
 
     with ThreadPoolExecutor(max_workers=worker_threads) as executor:
+        turso_ready = False
         loop_idx = 0
         while True:
             loop_idx += 1
-            if active_hours is not None:
-                sleep_until_active(active_hours, verbose=bool(args.verbose))
-
-            if not turso_ready:
-                _ensure_turso()
-            active_engine: Optional[Engine] = engine if turso_ready else None
-
-            inserted, ingest_turso_error = ingest_rss_many_once(
+            turso_ready, active_engine_used, inserted, flushed_redis, flushed_spool, recovered, scheduled = _run_loop_once(
+                executor,
+                args=args,
+                engine=engine,
                 rss_urls=rss_urls,
-                engine=active_engine,
                 spool_dir=spool_dir,
                 redis_client=redis_client,
                 redis_queue_key=redis_queue_key,
-                author=args.author.strip(),
-                user_id=(args.user_id.strip() or None),
                 limit=limit,
-                rss_timeout=float(args.rss_timeout),
-                verbose=bool(args.verbose),
+                worker_threads=worker_threads,
+                config=config,
+                limiter=limiter,
+                active_hours=active_hours,
+                turso_ready=turso_ready,
             )
-
-            turso_error = bool(ingest_turso_error)
-            recovered = 0
-            flushed_redis = 0
-            flushed_spool = 0
-            scheduled = 0
-
-            if active_engine is not None:
-                try:
-                    recovered = recover_stuck_ai_tasks(
-                        active_engine,
-                        now_epoch=int(time.time()),
-                        stuck_seconds=max(60, int(args.ai_stuck_seconds)),
-                        verbose=bool(args.verbose),
-                    )
-                    recovered += recover_done_without_processed_at(active_engine, verbose=bool(args.verbose))
-                except Exception as e:
-                    turso_error = True
-                    if args.verbose:
-                        print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
-
-                flushed_redis, flush_redis_turso_error = flush_redis_to_turso(
-                    client=redis_client,
-                    queue_key=redis_queue_key,
-                    spool_dir=spool_dir,
-                    engine=active_engine,
-                    max_items=200,
-                    verbose=bool(args.verbose),
-                )
-                flushed_spool, flush_spool_turso_error = flush_spool_to_turso(
-                    spool_dir=spool_dir,
-                    engine=active_engine,
-                    max_items=200,
-                    verbose=bool(args.verbose),
-                )
-                scheduled, schedule_turso_error = _schedule_ai(executor, engine=active_engine)
-
-                turso_error = bool(turso_error or flush_redis_turso_error or flush_spool_turso_error or schedule_turso_error)
-
-            if turso_error:
-                turso_ready = False
-
             if args.verbose:
                 print(
-                    f"[loop] idx={loop_idx} turso_ready={int(bool(active_engine))} "
+                    f"[loop] idx={loop_idx} turso_ready={int(active_engine_used)} "
                     f"rss_inserted={inserted} redis_flush={flushed_redis} spool_flush={flushed_spool} "
                     f"ai_recovered={recovered} ai_scheduled={scheduled}",
                     flush=True,
                 )
-
             time.sleep(interval)
 
 
