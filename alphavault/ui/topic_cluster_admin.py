@@ -9,6 +9,7 @@ import streamlit as st
 from sqlalchemy.engine import Engine
 
 from alphavault.topic_cluster import (
+    delete_cluster,
     delete_cluster_topics,
     ensure_cluster_schema,
     upsert_cluster,
@@ -191,6 +192,41 @@ def _render_current_member_list(current_topics: list[str]) -> None:
         st.info("这个板块还没有成员。")
 
 
+def _render_cluster_delete(
+    *,
+    engine: Engine,
+    selected_cluster: str,
+    cluster_name: str,
+) -> None:
+    st.markdown("**删除板块**")
+    title = f"{selected_cluster} · {cluster_name}" if cluster_name and cluster_name != selected_cluster else selected_cluster
+    st.caption(f"你要删：{title}")
+    st.caption("注意：不会自动删“关注页”。如果你有关注这个板块，要去“关注页”手动删。")
+
+    confirm_key = f"topic_cluster_delete_confirm:{selected_cluster}"
+    btn_key = f"topic_cluster_delete_btn:{selected_cluster}"
+    confirm = st.checkbox("我确认要删除这个板块", value=False, key=confirm_key)
+    if not st.button("删除这个板块", type="secondary", disabled=not bool(confirm), key=btn_key):
+        return
+
+    try:
+        ensure_cluster_schema(engine)
+        deleted = delete_cluster(engine, cluster_key=selected_cluster)
+    except Exception as exc:
+        st.error(f"删除失败：{type(exc).__name__}: {exc}")
+        st.stop()
+
+    st.success(
+        "已删除。"
+        + f" clusters={deleted.get('clusters', 0)}"
+        + f", topics={deleted.get('topics', 0)}"
+        + f", overrides={deleted.get('overrides', 0)}"
+    )
+    st.session_state.pop("topic_cluster_selected_cluster", None)
+    st.cache_data.clear()
+    st.rerun()
+
+
 def show_topic_cluster_admin(
     *,
     engine: Engine,
@@ -259,6 +295,13 @@ def show_topic_cluster_admin(
     st.divider()
     cluster_name = (name_by_key.get(selected_cluster) or selected_cluster).strip()
     cluster_desc = (desc_by_key.get(selected_cluster) or "").strip()
+    _render_cluster_delete(
+        engine=engine,
+        selected_cluster=selected_cluster,
+        cluster_name=cluster_name,
+    )
+
+    st.divider()
     _render_ai_section(
         engine=engine,
         assertions_all=assertions_all,
