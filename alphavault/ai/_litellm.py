@@ -17,7 +17,7 @@ def _import_litellm():
 
 
 PYDANTIC_SERIALIZER_WARNING_MESSAGE_RE = r"^Pydantic serializer warnings:"
-PYDANTIC_MAIN_MODULE_RE = r"^pydantic\\.main$"
+PYDANTIC_MAIN_MODULE_RE = r"^pydantic\.main$"
 
 
 def _suppress_pydantic_serializer_warning() -> None:

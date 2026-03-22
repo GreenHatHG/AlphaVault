@@ -14,6 +14,8 @@ from alphavault.db.turso_db import (
     TOPIC_CLUSTER_TOPICS_TABLE,
     TOPIC_CLUSTERS_TABLE,
     init_topic_cluster_schema,
+    turso_connect_autocommit,
+    turso_savepoint,
 )
 
 
@@ -172,7 +174,7 @@ def upsert_cluster(
     description: str,
 ) -> None:
     now = _now_str()
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -224,7 +226,7 @@ def upsert_cluster_topics(
         for topic_key in items
     ]
 
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -283,7 +285,7 @@ def upsert_cluster_topics_detailed(
     if not payloads:
         return 0
 
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -310,17 +312,18 @@ def delete_cluster_topics(engine: Engine, *, cluster_key: str, topic_keys: Itera
     key = str(cluster_key or "").strip()
     if not key:
         return 0
-    with engine.begin() as conn:
-        for topic_key in items:
-            conn.execute(
-                text(
-                    f"""
-                    DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE}
-                    WHERE topic_key = :topic_key AND cluster_key = :cluster_key
-                    """
-                ),
-                {"topic_key": topic_key, "cluster_key": key},
-            )
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            for topic_key in items:
+                conn.execute(
+                    text(
+                        f"""
+                        DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE}
+                        WHERE topic_key = :topic_key AND cluster_key = :cluster_key
+                        """
+                    ),
+                    {"topic_key": topic_key, "cluster_key": key},
+                )
     return len(items)
 
 
@@ -334,19 +337,20 @@ def delete_cluster(engine: Engine, *, cluster_key: str) -> dict[str, int]:
     if not key:
         return {"clusters": 0, "topics": 0, "overrides": 0}
 
-    with engine.begin() as conn:
-        res_topics = conn.execute(
-            text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"),
-            {"cluster_key": key},
-        )
-        res_overrides = conn.execute(
-            text(f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"),
-            {"cluster_key": key},
-        )
-        res_clusters = conn.execute(
-            text(f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"),
-            {"cluster_key": key},
-        )
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            res_topics = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
+            res_overrides = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
+            res_clusters = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
 
     return {
         "clusters": int(res_clusters.rowcount or 0),

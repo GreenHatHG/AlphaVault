@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 # NOTE: This module is extracted from the old local-sqlite sync scripts.
@@ -13,7 +15,66 @@ TOPIC_CLUSTERS_TABLE = "topic_clusters"
 TOPIC_CLUSTER_TOPICS_TABLE = "topic_cluster_topics"
 TOPIC_CLUSTER_POST_OVERRIDES_TABLE = "topic_cluster_post_overrides"
 
+TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
+TURSO_SAVEPOINT_NAME = "alphavault_sp"
+_SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_ignore_readonly_isolation_level"
+
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
+
+
+def turso_connect_autocommit(engine: Engine) -> Connection:
+    """
+    Return a Connection that behaves like AUTOCOMMIT for Turso (libsql).
+
+    Why:
+    - Avoid DBAPI commit()/rollback(), which may panic in some libsql builds.
+    - Some libsql DBAPI connections expose a read-only `isolation_level`, which breaks
+      SQLAlchemy's default SQLite isolation_level setter.
+    """
+    dialect = getattr(engine, "dialect", None)
+    if dialect is not None and not getattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False):
+        original_set_isolation_level = getattr(dialect, "set_isolation_level", None)
+
+        if callable(original_set_isolation_level):
+
+            def _patched_set_isolation_level(dbapi_connection, level):  # type: ignore[no-untyped-def]
+                try:
+                    return original_set_isolation_level(dbapi_connection, level)
+                except AttributeError as exc:
+                    # libsql may expose a read-only Connection.isolation_level
+                    # This can happen both when setting AUTOCOMMIT and when SQLAlchemy resets the connection
+                    # characteristics on close / return-to-pool.
+                    if "isolation_level" in str(exc):
+                        return None
+                    raise
+
+            dialect.set_isolation_level = _patched_set_isolation_level  # type: ignore[assignment]
+            setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
+
+    return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
+
+
+@contextmanager
+def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Connection:
+    """
+    Run multiple SQL statements as one atomic unit without calling DBAPI commit()/rollback().
+    """
+    savepoint = str(name or "").strip()
+    if not savepoint or _SAVEPOINT_NAME_RE.fullmatch(savepoint) is None:
+        raise ValueError("invalid_savepoint_name")
+
+    conn.execute(text(f"SAVEPOINT {savepoint}"))
+    try:
+        yield conn
+    except Exception:
+        try:
+            conn.execute(text(f"ROLLBACK TO {savepoint}"))
+        finally:
+            conn.execute(text(f"RELEASE {savepoint}"))
+        raise
+    else:
+        conn.execute(text(f"RELEASE {savepoint}"))
 
 
 def _topic_cluster_topics_pk_cols(conn) -> list[str]:
@@ -165,7 +226,7 @@ def init_topic_cluster_schema(engine: Engine) -> None:
     CREATE INDEX IF NOT EXISTS idx_{TOPIC_CLUSTER_POST_OVERRIDES_TABLE}_cluster_key
         ON {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}(cluster_key);
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(text(ddl_clusters))
         conn.execute(text(ddl_topics))
         conn.execute(text(ddl_overrides))
@@ -223,7 +284,7 @@ def init_cloud_schema(engine: Engine) -> None:
     CREATE INDEX IF NOT EXISTS idx_assertions_topic_key ON assertions(topic_key);
     CREATE INDEX IF NOT EXISTS idx_assertions_action ON assertions(action);
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(text(ddl_posts))
         conn.execute(text(ddl_assertions))
         for stmt in idx_sql.strip().split(";\n"):

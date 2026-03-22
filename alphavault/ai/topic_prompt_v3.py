@@ -23,10 +23,13 @@ def build_prompt_header(*, focus_username: str) -> str:
     )
 
 
-def build_topic_prompt(*, ai_topic_package: Dict[str, Any]) -> str:
+def build_topic_prompt(*, ai_topic_package: Dict[str, Any], compact_json: bool = False) -> str:
     focus_username = str(ai_topic_package.get("focus_username") or "").strip()
     header = build_prompt_header(focus_username=focus_username)
-    topic_json = json.dumps(ai_topic_package, ensure_ascii=False, indent=2)
+    if compact_json:
+        topic_json = json.dumps(ai_topic_package, ensure_ascii=False, separators=(",", ":"))
+    else:
+        topic_json = json.dumps(ai_topic_package, ensure_ascii=False, indent=2)
     return (
         "\n\n".join(
             [
@@ -46,10 +49,14 @@ def build_topic_prompt(*, ai_topic_package: Dict[str, Any]) -> str:
     )
 
 
+def build_topic_prompt_compact(*, ai_topic_package: Dict[str, Any]) -> str:
+    return build_topic_prompt(ai_topic_package=ai_topic_package, compact_json=True)
+
+
 __all__ = [
     "TOPIC_PROMPT_VERSION",
     "PROMPT_FOCUS_USERNAME_PLACEHOLDER",
     "build_prompt_header",
     "build_topic_prompt",
+    "build_topic_prompt_compact",
 ]
-

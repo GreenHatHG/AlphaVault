@@ -10,7 +10,7 @@ from alphavault.env import load_dotenv_if_present
 
 load_dotenv_if_present()
 
-from alphavault.db.turso_db import get_turso_engine_from_env
+from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit, turso_savepoint
 from alphavault.db.turso_queue import ensure_cloud_queue_schema
 from alphavault.weibo.display import format_weibo_display_md
 
@@ -203,8 +203,9 @@ def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry
             print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
             continue
 
-        with engine.begin() as conn:
-            updated_this_batch = _update_batch(conn, updates=updates, overwrite=True)
+        with turso_connect_autocommit(engine) as conn:
+            with turso_savepoint(conn):
+                updated_this_batch = _update_batch(conn, updates=updates, overwrite=True)
         updated += updated_this_batch
         print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
 
@@ -267,8 +268,9 @@ def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, ove
         if dry_run:
             print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
         else:
-            with engine.begin() as conn:
-                updated_this_batch = _update_batch(conn, updates=updates, overwrite=bool(overwrite))
+            with turso_connect_autocommit(engine) as conn:
+                with turso_savepoint(conn):
+                    updated_this_batch = _update_batch(conn, updates=updates, overwrite=bool(overwrite))
             updated += updated_this_batch
             print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
 

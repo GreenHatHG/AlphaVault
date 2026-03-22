@@ -69,8 +69,8 @@ from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
 
 from alphavault.weibo.topic_prompt_tree import (
-    MAX_NODE_TEXT_CHARS,
     MAX_THREAD_POSTS,
+    MAX_TOPIC_PROMPT_CHARS,
     build_topic_runtime_context,
     thread_root_info_for_post,
 )
@@ -150,6 +150,102 @@ def _to_one_line_tail(value: str, *, max_chars: int) -> str:
     if max_chars <= 0 or len(s) <= max_chars:
         return s
     return s[-max_chars:]
+
+
+def _max_message_tree_text_len(node: object) -> int:
+    if not isinstance(node, dict):
+        return 0
+    max_len = len(str(node.get("text") or ""))
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            max_len = max(max_len, _max_message_tree_text_len(child))
+    return max_len
+
+
+def _build_topic_prompt_v3_with_prompt_chars_limit(
+    *,
+    root_key: str,
+    root_segment: str,
+    root_content_key: str,
+    focus_username: str,
+    posts: list[dict[str, object]],
+    max_prompt_chars: int,
+) -> tuple[dict[str, object], int, str, int, int, bool, bool]:
+    """
+    Build a topic-prompt-v3 prompt with a hard prompt chars budget.
+
+    Returns:
+      (runtime_context, truncated_nodes, prompt, prompt_chars, node_chars_limit, compact_json, include_comments)
+    """
+    def build_ctx(*, node_chars: int, include_comments: bool) -> tuple[dict[str, object], int]:
+        return build_topic_runtime_context(
+            root_key=root_key,
+            root_segment=root_segment,
+            root_content_key=root_content_key,
+            focus_username=focus_username,
+            posts=posts,
+            include_virtual_comments=bool(include_comments),
+            max_node_text_chars=int(node_chars),
+        )
+
+    def build_prompt(ctx: dict[str, object], *, compact_json: bool) -> tuple[str, int]:
+        pkg = ctx.get("ai_topic_package")
+        if not isinstance(pkg, dict):
+            raise RuntimeError("ai_topic_package_invalid")
+        p = build_topic_prompt(ai_topic_package=pkg, compact_json=bool(compact_json))
+        return p, len(p)
+
+    def search_best_cap(*, include_comments: bool) -> Optional[tuple[dict[str, object], int, str, int, int]]:
+        base_ctx, _base_truncated = build_ctx(node_chars=0, include_comments=include_comments)
+        max_len = max(1, _max_message_tree_text_len(base_ctx.get("message_tree")))
+        lo = 1
+        hi = int(max_len)
+        best: Optional[tuple[dict[str, object], int, str, int, int]] = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            mid_ctx, mid_truncated = build_ctx(node_chars=mid, include_comments=include_comments)
+            mid_prompt, mid_chars = build_prompt(mid_ctx, compact_json=True)
+            if mid_chars <= max_prompt_chars:
+                best = (mid_ctx, int(mid_truncated), mid_prompt, int(mid_chars), int(mid))
+                lo = mid + 1
+                continue
+            hi = mid - 1
+        return best
+
+    # 1) Full context + pretty JSON (readable)
+    ctx_full, truncated_full = build_ctx(node_chars=0, include_comments=True)
+    pretty_prompt, pretty_chars = build_prompt(ctx_full, compact_json=False)
+    if max_prompt_chars <= 0 or pretty_chars <= max_prompt_chars:
+        return ctx_full, int(truncated_full), pretty_prompt, int(pretty_chars), 0, False, True
+
+    # 2) Full context + compact JSON (save chars on whitespace)
+    compact_prompt, compact_chars = build_prompt(ctx_full, compact_json=True)
+    if compact_chars <= max_prompt_chars:
+        return ctx_full, int(truncated_full), compact_prompt, int(compact_chars), 0, True, True
+
+    # 3) Full context + compact JSON + per-node cap
+    best = search_best_cap(include_comments=True)
+    if best is not None:
+        best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap = best
+        return best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap, True, True
+
+    # 4) Fallback: remove virtual comment nodes (keep only status nodes)
+    ctx_no_comments, truncated_nc = build_ctx(node_chars=0, include_comments=False)
+    nc_pretty_prompt, nc_pretty_chars = build_prompt(ctx_no_comments, compact_json=False)
+    if nc_pretty_chars <= max_prompt_chars:
+        return ctx_no_comments, int(truncated_nc), nc_pretty_prompt, int(nc_pretty_chars), 0, False, False
+
+    nc_compact_prompt, nc_compact_chars = build_prompt(ctx_no_comments, compact_json=True)
+    if nc_compact_chars <= max_prompt_chars:
+        return ctx_no_comments, int(truncated_nc), nc_compact_prompt, int(nc_compact_chars), 0, True, False
+
+    best_nc = search_best_cap(include_comments=False)
+    if best_nc is not None:
+        best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap = best_nc
+        return best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap, True, False
+
+    raise RuntimeError(f"topic_prompt_too_long max_prompt_chars={max_prompt_chars}")
 
 
 def _clamp_int(value: object, low: int, high: int, default: int) -> int:
@@ -334,15 +430,23 @@ def _process_one_post_uid_topic_prompt_v3(
         except Exception:
             continue
 
-    runtime_context, truncated_nodes = build_topic_runtime_context(
+    (
+        runtime_context,
+        truncated_nodes,
+        prompt,
+        prompt_chars,
+        node_chars,
+        compact_json,
+        include_comments,
+    ) = _build_topic_prompt_v3_with_prompt_chars_limit(
         root_key=root_key,
         root_segment=root_segment,
         root_content_key=root_content_key,
         focus_username=focus,
         posts=kept,
-        max_node_text_chars=MAX_NODE_TEXT_CHARS,
+        max_prompt_chars=MAX_TOPIC_PROMPT_CHARS,
     )
-    if trimmed_count > 0 or truncated_nodes > 0:
+    if trimmed_count > 0 or truncated_nodes > 0 or compact_json or (not include_comments):
         print(
             " ".join(
                 [
@@ -352,18 +456,17 @@ def _process_one_post_uid_topic_prompt_v3(
                     f"post_count={post_count}",
                     f"trimmed_count={trimmed_count}",
                     f"max_nodes={MAX_THREAD_POSTS}",
-                    f"max_chars={MAX_NODE_TEXT_CHARS}",
+                    f"prompt_chars={prompt_chars}",
+                    f"max_prompt_chars={MAX_TOPIC_PROMPT_CHARS}",
+                    f"compact_json={1 if compact_json else 0}",
+                    f"comments={1 if include_comments else 0}",
+                    f"node_chars={node_chars}",
                     f"truncated_nodes={truncated_nodes}",
                 ]
             ),
             flush=True,
         )
 
-    ai_topic_package = runtime_context.get("ai_topic_package")
-    if not isinstance(ai_topic_package, dict):
-        raise RuntimeError("ai_topic_package_invalid")
-
-    prompt = build_topic_prompt(ai_topic_package=ai_topic_package)
     trace_label = f"topic:{root_key}"
 
     if config.verbose:

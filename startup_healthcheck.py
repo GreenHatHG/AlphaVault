@@ -16,7 +16,7 @@ from alphavault.constants import (
     ENV_TURSO_AUTH_TOKEN,
     ENV_TURSO_DATABASE_URL,
 )
-from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit, turso_savepoint
 from alphavault.env import load_dotenv_if_present
 
 load_dotenv_if_present()
@@ -84,27 +84,28 @@ def _check_turso() -> None:
 
     try:
         note = f"pid={os.getpid()} ts={int(time.time())}"
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {HEALTHCHECK_TABLE} (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        created_at INTEGER NOT NULL,
-                        note TEXT NOT NULL
+        with turso_connect_autocommit(engine) as conn:
+            with turso_savepoint(conn):
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {HEALTHCHECK_TABLE} (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            created_at INTEGER NOT NULL,
+                            note TEXT NOT NULL
+                        )
+                        """
                     )
-                    """
                 )
-            )
-            conn.execute(
-                text(f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"),
-                {"ts": int(time.time()), "note": note},
-            )
-            inserted_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
-            conn.execute(
-                text(f"DELETE FROM {HEALTHCHECK_TABLE} WHERE id = :id"),
-                {"id": int(inserted_id)},
-            )
+                conn.execute(
+                    text(f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"),
+                    {"ts": int(time.time()), "note": note},
+                )
+                inserted_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
+                conn.execute(
+                    text(f"DELETE FROM {HEALTHCHECK_TABLE} WHERE id = :id"),
+                    {"id": int(inserted_id)},
+                )
     except Exception as e:
         raise RuntimeError(f"turso write failed: {type(e).__name__}: {e}") from e
 
