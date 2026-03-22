@@ -17,6 +17,12 @@ from alphavault.ui.topic_cluster_admin_helpers import (
     _uniq_str,
 )
 
+MIN_CHUNK_SIZE = 1
+RECOMMENDED_MIN_CHUNK_SIZE = 100
+DEFAULT_CHUNK_SIZE = RECOMMENDED_MIN_CHUNK_SIZE
+MAX_CHUNK_SIZE = 800
+CHUNK_SIZE_STEP = 50
+
 
 def _run_ai_batches(
     *,
@@ -197,14 +203,23 @@ def _render_ai_section(
         chunk_size = int(
             st.number_input(
                 "每批 topic_key 数量",
-                min_value=100,
-                max_value=800,
-                value=400,
-                step=50,
-                help="每批越大：调用次数更少，但更容易超长；每批越小：更稳，但调用次数更多。",
+                min_value=MIN_CHUNK_SIZE,
+                max_value=MAX_CHUNK_SIZE,
+                value=DEFAULT_CHUNK_SIZE,
+                step=CHUNK_SIZE_STEP,
+                help=(
+                    f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}。"
+                    "每批越大：调用次数更少，但更容易超长；每批越小：更稳，但调用次数更多。"
+                ),
                 key="cluster_ai_chunk_size_input",
             )
         )
+        if chunk_size < RECOMMENDED_MIN_CHUNK_SIZE:
+            # Soft guidance: allow small chunk_size, but warn about time/cost.
+            st.warning(
+                f"你现在每批是 {chunk_size} 个 topic_key。这样 AI 要调用很多次，会更慢、也更费。"
+                f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}（default={DEFAULT_CHUNK_SIZE}）。"
+            )
 
     topic_keys = [str(x).strip() for x in counts_series.index.tolist() if str(x).strip()]
     topic_keys = topic_keys[: int(max_total_topics)]
