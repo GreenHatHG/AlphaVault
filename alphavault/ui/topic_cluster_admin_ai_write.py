@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
-
 import pandas as pd
 import streamlit as st
 from sqlalchemy.engine import Engine
@@ -9,10 +7,8 @@ from sqlalchemy.engine import Engine
 from alphavault.topic_cluster import ensure_cluster_schema, upsert_cluster_topics_detailed
 from alphavault.ui.topic_cluster_admin_helpers import (
     _format_basic_topic,
-    _format_move_topic,
     _parse_confidence,
     _sort_by_count,
-    _split_new_and_move,
 )
 
 
@@ -24,22 +20,21 @@ def _render_ai_write_section(
     include_items: list[dict],
     unsure_items: list[dict],
     count_by_topic: dict[str, int],
-    name_by_key: Dict[str, str],
 ) -> None:
     st.markdown("**写入板块成员**")
-    st.caption("先选，再写入：新增默认全选；已在别的板块默认不选；unsure 默认不选。")
+    st.caption("include 默认全选；unsure 默认不选。只会加入，不会移走。")
 
-    # Build a quick topic_key -> cluster_keys map for grouping (new vs existing).
-    topic_to_clusters: dict[str, list[str]] = {}
+    selected_cluster = str(selected_cluster or "").strip()
+    if not selected_cluster:
+        st.info("请先选一个板块。")
+        return
+
+    existing_in_cluster: set[str] = set()
     if not topic_map.empty and "topic_key" in topic_map.columns and "cluster_key" in topic_map.columns:
-        for _, row in topic_map[["topic_key", "cluster_key"]].dropna().iterrows():
-            topic_key = str(row.get("topic_key") or "").strip()
-            cluster_key = str(row.get("cluster_key") or "").strip()
-            if topic_key and cluster_key:
-                topic_to_clusters.setdefault(topic_key, []).append(cluster_key)
-    if topic_to_clusters:
-        for topic_key, keys in list(topic_to_clusters.items()):
-            topic_to_clusters[topic_key] = sorted(set(str(k).strip() for k in keys if str(k).strip()))
+        df = topic_map[["topic_key", "cluster_key"]].dropna().copy()
+        df["topic_key"] = df["topic_key"].astype(str).str.strip()
+        df["cluster_key"] = df["cluster_key"].astype(str).str.strip()
+        existing_in_cluster = set(df.loc[df["cluster_key"] == selected_cluster, "topic_key"].tolist())
 
     include_conf_by_topic: dict[str, float] = {}
     for item in include_items:
@@ -53,107 +48,57 @@ def _render_ai_write_section(
         if topic_key and topic_key not in include_conf_by_topic:
             unsure_conf_by_topic[topic_key] = _parse_confidence(item.get("confidence", None), 0.55)
 
-    include_keys = [
+    include_keys_raw = [
         str(item.get("topic_key") or "").strip()
         for item in include_items
         if str(item.get("topic_key") or "").strip()
     ]
-    include_keys = sorted(set(include_keys))
-    include_new, include_move, include_from = _split_new_and_move(
-        include_keys,
-        topic_to_clusters=topic_to_clusters,
-        selected_cluster=selected_cluster,
-    )
+    include_keys = sorted(set([k for k in include_keys_raw if k and k not in existing_in_cluster]))
+    include_keys = _sort_by_count(include_keys, count_by_topic=count_by_topic)
 
-    unsure_keys = [
+    unsure_keys_raw = [
         str(item.get("topic_key") or "").strip()
         for item in unsure_items
         if str(item.get("topic_key") or "").strip()
     ]
-    unsure_keys = sorted(set(unsure_keys))
-    unsure_new, unsure_move, unsure_from = _split_new_and_move(
-        unsure_keys,
-        topic_to_clusters=topic_to_clusters,
-        selected_cluster=selected_cluster,
+    unsure_keys = sorted(
+        set(
+            [
+                k
+                for k in unsure_keys_raw
+                if k and k not in existing_in_cluster and k not in set(include_keys)
+            ]
+        )
+    )
+    unsure_keys = _sort_by_count(unsure_keys, count_by_topic=count_by_topic)
+
+    st.markdown("**include（默认全选）**")
+    include_selected = st.multiselect(
+        "选择要加入本板块的 topic_key",
+        options=include_keys,
+        default=include_keys,
+        format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
+        key=f"cluster_ai_write_include:{selected_cluster}",
     )
 
-    include_new = _sort_by_count(include_new, count_by_topic=count_by_topic)
-    include_move = _sort_by_count(include_move, count_by_topic=count_by_topic)
-    unsure_new = _sort_by_count(unsure_new, count_by_topic=count_by_topic)
-    unsure_move = _sort_by_count(unsure_move, count_by_topic=count_by_topic)
-
-    from_clusters_by_topic = {**include_from, **unsure_from}
-
-    col_w1, col_w2 = st.columns(2)
-    with col_w1:
-        st.markdown("**include：新增**")
-        include_new_selected = st.multiselect(
-            "选择要新增进本板块的 topic_key",
-            options=include_new,
-            default=include_new,
-            format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
-            key=f"cluster_ai_write_include_new:{selected_cluster}",
-        )
-    with col_w2:
-        st.markdown("**include：已在别的板块**")
-        st.caption("提示：只会“也加入”，不会移走。")
-        include_move_selected = st.multiselect(
-            "选择要加入本板块的 topic_key",
-            options=include_move,
-            default=[],
-            format_func=lambda k: _format_move_topic(
-                str(k),
-                from_clusters_by_topic=from_clusters_by_topic,
-                name_by_key=name_by_key,
-                count_by_topic=count_by_topic,
-            ),
-            key=f"cluster_ai_write_include_move:{selected_cluster}",
-        )
-
-    want_unsure = st.checkbox(
-        "我也要选 unsure",
-        value=False,
-        key=f"cluster_ai_write_want_unsure:{selected_cluster}",
+    st.markdown("**unsure（默认不选）**")
+    unsure_selected = st.multiselect(
+        "选择要加入（unsure）的 topic_key",
+        options=unsure_keys,
+        default=[],
+        format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
+        key=f"cluster_ai_write_unsure:{selected_cluster}",
     )
-    unsure_new_selected: list[str] = []
-    unsure_move_selected: list[str] = []
-    if want_unsure and (unsure_new or unsure_move):
-        col_u1, col_u2 = st.columns(2)
-        with col_u1:
-            st.markdown("**unsure：新增**")
-            unsure_new_selected = st.multiselect(
-                "选择要新增（unsure）的 topic_key",
-                options=unsure_new,
-                default=[],
-                format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
-                key=f"cluster_ai_write_unsure_new:{selected_cluster}",
-            )
-        with col_u2:
-            st.markdown("**unsure：已在别的板块**")
-            unsure_move_selected = st.multiselect(
-                "选择要加入（unsure）的 topic_key",
-                options=unsure_move,
-                default=[],
-                format_func=lambda k: _format_move_topic(
-                    str(k),
-                    from_clusters_by_topic=from_clusters_by_topic,
-                    name_by_key=name_by_key,
-                    count_by_topic=count_by_topic,
-                ),
-                key=f"cluster_ai_write_unsure_move:{selected_cluster}",
-            )
 
     to_write = [
-        *[str(x).strip() for x in include_new_selected],
-        *[str(x).strip() for x in include_move_selected],
-        *[str(x).strip() for x in unsure_new_selected],
-        *[str(x).strip() for x in unsure_move_selected],
+        *[str(x).strip() for x in include_selected],
+        *[str(x).strip() for x in unsure_selected],
     ]
     to_write = [x for x in to_write if x]
     to_write = sorted(set(to_write))
     st.caption(f"本次将写入：{len(to_write)} 个 topic_key")
 
-    if not st.button("写入这个板块（按你勾选的）", disabled=not bool(to_write)):
+    if not st.button("确认加入这个板块", type="primary", disabled=not bool(to_write)):
         return
 
     try:

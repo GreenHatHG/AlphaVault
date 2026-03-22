@@ -78,39 +78,6 @@ def _select_cluster(clusters: pd.DataFrame, *, name_by_key: Dict[str, str]) -> s
     return str(selected_cluster or "").strip()
 
 
-def _render_ai_keyword_shortcut_buttons(
-    *,
-    selected_cluster: str,
-    apply_keyword_search,
-) -> None:
-    # AI keywords shortcut: click to fill the search box.
-    ai_shortcut = st.session_state.get(f"cluster_ai_result:{selected_cluster}", None)
-    if isinstance(ai_shortcut, dict):
-        shortcut_keywords = ai_shortcut.get("keywords")
-        if isinstance(shortcut_keywords, list):
-            shortcut_words = [str(x).strip() for x in shortcut_keywords if str(x).strip()]
-        else:
-            shortcut_words = []
-    else:
-        shortcut_words = []
-
-    if not shortcut_words:
-        return
-
-    st.markdown("**AI keywords 快捷搜**")
-    st.caption("点一下：自动切到“增加”，并把搜索框填好。")
-    words_for_buttons = shortcut_words[:15]
-    cols_kw = st.columns(min(5, len(words_for_buttons)))
-    for idx, word in enumerate(words_for_buttons):
-        col = cols_kw[idx % len(cols_kw)]
-        col.button(
-            str(word),
-            key=f"cluster_ai_keyword_quick_btn:{selected_cluster}:{idx}",
-            on_click=apply_keyword_search,
-            args=(str(word),),
-        )
-
-
 def _render_member_add(
     *,
     engine: Engine,
@@ -265,21 +232,11 @@ def show_topic_cluster_admin(
         ]
     )
 
-    def apply_keyword_search(word: str) -> None:
-        st.session_state["topic_cluster_manage_action"] = "增加"
-        st.session_state["topic_cluster_search_topic_key"] = str(word or "")
-        st.session_state["topic_cluster_to_add"] = []
-
     col_left, col_mid = st.columns([2, 1])
     with col_left:
         st.caption("v2 规则：一个 topic_key 可以属于多个板块；加入不会自动移走。")
     with col_mid:
         st.metric("当前成员数", f"{len(current_topics)}")
-
-    _render_ai_keyword_shortcut_buttons(
-        selected_cluster=selected_cluster,
-        apply_keyword_search=apply_keyword_search,
-    )
 
     action = st.radio("操作", options=["增加", "移除"], horizontal=True, key="topic_cluster_manage_action")
     if action == "增加":
@@ -310,8 +267,6 @@ def show_topic_cluster_admin(
         selected_cluster=selected_cluster,
         cluster_name=cluster_name,
         cluster_desc=cluster_desc,
-        name_by_key=name_by_key,
-        apply_keyword_search=apply_keyword_search,
     )
 
 

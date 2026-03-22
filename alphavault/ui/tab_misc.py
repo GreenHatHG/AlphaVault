@@ -56,14 +56,7 @@ def show_topic_timeline(
         if len(cluster_keys) > 1:
             st.caption("提示：这个板块名对应多个ID，先用第一个。")
 
-        default_keywords: list[str] = []
-        if cluster_key:
-            ai_result = st.session_state.get(f"cluster_ai_result:{cluster_key}", None)
-            if isinstance(ai_result, dict):
-                raw_keywords = ai_result.get("keywords")
-                if isinstance(raw_keywords, list):
-                    default_keywords = [str(x).strip() for x in raw_keywords if str(x).strip()]
-        default_text = "\n".join(default_keywords)
+        default_text = ""
 
         keywords_text = st.text_area(
             "关键字（多个，OR；会把结果拼起来）",
