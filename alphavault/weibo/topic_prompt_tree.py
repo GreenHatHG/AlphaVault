@@ -25,7 +25,12 @@ from alphavault.weibo.display import format_weibo_display_md
 
 # Hard limits to prevent huge prompts.
 MAX_THREAD_POSTS = 60
-MAX_NODE_TEXT_CHARS = 600
+
+# NOTE:
+# - MAX_NODE_TEXT_CHARS is kept for backward-compat, but default truncation is disabled.
+# - Prompt length is controlled by a total prompt chars budget (worker layer).
+MAX_NODE_TEXT_CHARS = 0
+MAX_TOPIC_PROMPT_CHARS = 50_000
 
 
 def _node_key(source_kind: str, source_id: str) -> str:
@@ -135,12 +140,14 @@ def build_topic_runtime_context(
     root_content_key: str,
     focus_username: str,
     posts: list[dict[str, object]],
+    include_virtual_comments: bool = True,
     max_node_text_chars: int = MAX_NODE_TEXT_CHARS,
 ) -> tuple[dict[str, Any], int]:
     """
     Build (runtime_context, truncated_nodes_count).
 
     posts: list of dicts (each needs platform_post_id/author/created_at/raw_text/display_md).
+    include_virtual_comments: whether to reconstruct other speakers as virtual 'comment' nodes.
     """
     focus = str(focus_username or "").strip()
     root_speaker = _extract_speaker_name(root_segment) or focus or "未知"
@@ -232,7 +239,7 @@ def build_topic_runtime_context(
             "text": leaf_text,
         }
 
-        virtual_segments = segments[:-1]
+        virtual_segments = segments[:-1] if include_virtual_comments else []
         if virtual_segments and root_content_key:
             first_key = _content_key_for_compare(virtual_segments[0], author_hint=_extract_speaker_name(virtual_segments[0]))
             if first_key and first_key == root_content_key:
@@ -312,6 +319,7 @@ def build_message_lookup_from_tree(message_tree: dict[str, Any]) -> dict[tuple[s
 __all__ = [
     "MAX_THREAD_POSTS",
     "MAX_NODE_TEXT_CHARS",
+    "MAX_TOPIC_PROMPT_CHARS",
     "build_topic_runtime_context",
     "thread_root_info_for_post",
 ]
