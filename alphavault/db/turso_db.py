@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 # NOTE: This module is extracted from the old local-sqlite sync scripts.
@@ -12,6 +14,37 @@ from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 TOPIC_CLUSTERS_TABLE = "topic_clusters"
 TOPIC_CLUSTER_TOPICS_TABLE = "topic_cluster_topics"
 TOPIC_CLUSTER_POST_OVERRIDES_TABLE = "topic_cluster_post_overrides"
+
+TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
+TURSO_SAVEPOINT_NAME = "alphavault_sp"
+_SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def turso_connect_autocommit(engine: Engine) -> Connection:
+    # Use AUTOCOMMIT to avoid DBAPI commit()/rollback(), which may panic in some libsql builds.
+    return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
+
+
+@contextmanager
+def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Connection:
+    """
+    Run multiple SQL statements as one atomic unit without calling DBAPI commit()/rollback().
+    """
+    savepoint = str(name or "").strip()
+    if not savepoint or _SAVEPOINT_NAME_RE.fullmatch(savepoint) is None:
+        raise ValueError("invalid_savepoint_name")
+
+    conn.execute(text(f"SAVEPOINT {savepoint}"))
+    try:
+        yield conn
+    except Exception:
+        try:
+            conn.execute(text(f"ROLLBACK TO {savepoint}"))
+        finally:
+            conn.execute(text(f"RELEASE {savepoint}"))
+        raise
+    else:
+        conn.execute(text(f"RELEASE {savepoint}"))
 
 
 def ensure_turso_engine(url: str, token: str) -> Engine:
@@ -79,7 +112,7 @@ def init_topic_cluster_schema(engine: Engine) -> None:
     CREATE INDEX IF NOT EXISTS idx_{TOPIC_CLUSTER_POST_OVERRIDES_TABLE}_cluster_key
         ON {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}(cluster_key);
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(text(ddl_clusters))
         conn.execute(text(ddl_topics))
         conn.execute(text(ddl_overrides))
@@ -131,7 +164,7 @@ def init_cloud_schema(engine: Engine) -> None:
     CREATE INDEX IF NOT EXISTS idx_assertions_topic_key ON assertions(topic_key);
     CREATE INDEX IF NOT EXISTS idx_assertions_action ON assertions(action);
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(text(ddl_posts))
         conn.execute(text(ddl_assertions))
         for stmt in idx_sql.strip().split(";\n"):

@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from alphavault.db.introspect import table_columns
-from alphavault.db.turso_db import init_cloud_schema
+from alphavault.db.turso_db import init_cloud_schema, turso_connect_autocommit, turso_savepoint
 
 
 AI_STATUS_PENDING = "pending"
@@ -57,23 +57,24 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
         ("ingested_at", "ingested_at INTEGER NOT NULL DEFAULT 0"),
     ]
 
-    with engine.begin() as conn:
-        cols = table_columns(conn, "posts")
-        for col_name, col_def in extra_columns:
-            if col_name in cols:
-                continue
-            conn.execute(text(f"ALTER TABLE posts ADD COLUMN {col_def}"))
-            if verbose:
-                print(f"[turso] schema add_column posts.{col_name}", flush=True)
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            cols = table_columns(conn, "posts")
+            for col_name, col_def in extra_columns:
+                if col_name in cols:
+                    continue
+                conn.execute(text(f"ALTER TABLE posts ADD COLUMN {col_def}"))
+                if verbose:
+                    print(f"[turso] schema add_column posts.{col_name}", flush=True)
 
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
-                    ON posts(ai_status, ai_next_retry_at);
-                """
+            conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
+                        ON posts(ai_status, ai_next_retry_at);
+                    """
+                )
             )
-        )
 
 
 def cloud_post_is_processed(engine: Engine, post_uid: str) -> bool:
@@ -111,7 +112,7 @@ def upsert_pending_post(
     NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
     final_status='irrelevant' and keep processed_at=NULL until AI is done.
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -189,7 +190,7 @@ def try_mark_ai_running(
     post_uid: str,
     now_epoch: int,
 ) -> bool:
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -291,7 +292,7 @@ def reset_ai_results_all(
 
     Returns: (deleted_assertions, updated_posts)
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         updated = conn.execute(
             text(
                 """
@@ -347,7 +348,7 @@ def reset_ai_results_for_post_uids(
         params["ai_status"] = AI_STATUS_PENDING
         params["archived_at"] = str(archived_at or "").strip()
 
-        with engine.begin() as conn:
+        with turso_connect_autocommit(engine) as conn:
             upd_res = conn.execute(
                 text(
                     f"""
@@ -383,7 +384,7 @@ def mark_ai_done(
     archived_at: str,
     ai_result_json: Optional[str],
 ) -> None:
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -429,71 +430,72 @@ def write_assertions_and_mark_done(
     assertions: Iterable[Dict[str, Any]],
 ) -> None:
     """
-    Commit AI outputs in a single transaction:
+    Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
     - overwrite assertions for post_uid
     - mark posts row as done
     """
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
-        for idx, a in enumerate(assertions, start=1):
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
+            for idx, a in enumerate(assertions, start=1):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO assertions (
+                            post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
+                            stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+                        ) VALUES (
+                            :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
+                            :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
+                        )
+                        """
+                    ),
+                    {
+                        "post_uid": post_uid,
+                        "idx": int(idx),
+                        "topic_key": a["topic_key"],
+                        "action": a["action"],
+                        "action_strength": int(a["action_strength"]),
+                        "summary": a["summary"],
+                        "evidence": a["evidence"],
+                        "confidence": float(a["confidence"]),
+                        "stock_codes_json": a.get("stock_codes_json", "[]"),
+                        "stock_names_json": a.get("stock_names_json", "[]"),
+                        "industries_json": a.get("industries_json", "[]"),
+                        "commodities_json": a.get("commodities_json", "[]"),
+                        "indices_json": a.get("indices_json", "[]"),
+                    },
+                )
+
             conn.execute(
                 text(
                     """
-                    INSERT INTO assertions (
-                        post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-                        stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
-                    ) VALUES (
-                        :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-                        :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
-                    )
+                    UPDATE posts
+                    SET final_status=:final_status,
+                        invest_score=:invest_score,
+                        processed_at=:processed_at,
+                        model=:model,
+                        prompt_version=:prompt_version,
+                        archived_at=:archived_at,
+                        ai_status='done',
+                        ai_running_at=NULL,
+                        ai_next_retry_at=NULL,
+                        ai_last_error=NULL,
+                        ai_result_json=:ai_result_json
+                    WHERE post_uid=:post_uid
                     """
                 ),
                 {
                     "post_uid": post_uid,
-                    "idx": int(idx),
-                    "topic_key": a["topic_key"],
-                    "action": a["action"],
-                    "action_strength": int(a["action_strength"]),
-                    "summary": a["summary"],
-                    "evidence": a["evidence"],
-                    "confidence": float(a["confidence"]),
-                    "stock_codes_json": a.get("stock_codes_json", "[]"),
-                    "stock_names_json": a.get("stock_names_json", "[]"),
-                    "industries_json": a.get("industries_json", "[]"),
-                    "commodities_json": a.get("commodities_json", "[]"),
-                    "indices_json": a.get("indices_json", "[]"),
+                    "final_status": final_status,
+                    "invest_score": invest_score,
+                    "processed_at": processed_at,
+                    "model": model,
+                    "prompt_version": prompt_version,
+                    "archived_at": archived_at,
+                    "ai_result_json": ai_result_json,
                 },
             )
-
-        conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET final_status=:final_status,
-                    invest_score=:invest_score,
-                    processed_at=:processed_at,
-                    model=:model,
-                    prompt_version=:prompt_version,
-                    archived_at=:archived_at,
-                    ai_status='done',
-                    ai_running_at=NULL,
-                    ai_next_retry_at=NULL,
-                    ai_last_error=NULL,
-                    ai_result_json=:ai_result_json
-                WHERE post_uid=:post_uid
-                """
-            ),
-            {
-                "post_uid": post_uid,
-                "final_status": final_status,
-                "invest_score": invest_score,
-                "processed_at": processed_at,
-                "model": model,
-                "prompt_version": prompt_version,
-                "archived_at": archived_at,
-                "ai_result_json": ai_result_json,
-            },
-        )
 
 
 def mark_ai_error(
@@ -505,7 +507,7 @@ def mark_ai_error(
     archived_at: str,
 ) -> None:
     msg = (error or "")[:1000]
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -535,7 +537,7 @@ def recover_stuck_ai_tasks(
     verbose: bool,
 ) -> int:
     threshold = int(now_epoch) - max(0, int(stuck_seconds))
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -564,7 +566,7 @@ def recover_done_without_processed_at(engine: Engine, *, verbose: bool) -> int:
 
     Such rows will never be picked by the AI scheduler, so we reset them to pending.
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -590,34 +592,34 @@ def write_cloud_assertions(
     post_uid: str,
     assertions: Iterable[Dict[str, Any]],
 ) -> None:
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
-        for idx, a in enumerate(assertions, start=1):
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO assertions (
-                        post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-                        stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
-                    ) VALUES (
-                        :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-                        :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
-                    )
-                    """
-                ),
-                {
-                    "post_uid": post_uid,
-                    "idx": int(idx),
-                    "topic_key": a["topic_key"],
-                    "action": a["action"],
-                    "action_strength": int(a["action_strength"]),
-                    "summary": a["summary"],
-                    "evidence": a["evidence"],
-                    "confidence": float(a["confidence"]),
-                    "stock_codes_json": a.get("stock_codes_json", "[]"),
-                    "stock_names_json": a.get("stock_names_json", "[]"),
-                    "industries_json": a.get("industries_json", "[]"),
-                    "commodities_json": a.get("commodities_json", "[]"),
-                    "indices_json": a.get("indices_json", "[]"),
-                },
-            )
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
+            for idx, a in enumerate(assertions, start=1):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO assertions (
+                            post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
+                            stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+                        ) VALUES (
+                            :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
+                            :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
+                        )
+                        """
+                    ),
+                    {
+                        "post_uid": post_uid,
+                        "idx": int(idx),
+                        "topic_key": a["topic_key"],
+                        "action": a["action"],
+                        "action_strength": int(a["action_strength"]),
+                        "summary": a["summary"],
+                        "evidence": a["evidence"],
+                        "confidence": float(a["confidence"]),
+                        "stock_codes_json": a.get("stock_codes_json", "[]"),
+                        "stock_names_json": a.get("stock_names_json", "[]"),
+                        "industries_json": a.get("industries_json", "[]"),
+                        "indices_json": a.get("indices_json", "[]"),
+                    },
+                )

@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from alphavault.constants import DATETIME_FMT
+from alphavault.db.turso_db import turso_connect_autocommit
 
 
 FOLLOW_PAGES_TABLE = "follow_pages"
@@ -64,7 +65,7 @@ def init_follow_pages_schema(engine: Engine) -> None:
     CREATE INDEX IF NOT EXISTS idx_{FOLLOW_PAGES_TABLE}_follow_type_key
         ON {FOLLOW_PAGES_TABLE}(follow_type, follow_key);
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(text(ddl_pages))
         for stmt in idx_sql.strip().split(";\n"):
             if stmt.strip():
@@ -109,7 +110,7 @@ def upsert_follow_page(
         raise ValueError("Invalid follow_type/follow_key")
 
     now = _now_str()
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -139,7 +140,7 @@ def delete_follow_page(engine: Engine, *, page_key: str) -> int:
     key = str(page_key or "").strip()
     if not key:
         return 0
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 f"""
