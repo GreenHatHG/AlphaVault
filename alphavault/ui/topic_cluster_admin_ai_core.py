@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -12,8 +13,17 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.engine import Engine
 
+from alphavault.ai.analyze import DEFAULT_AI_RETRY_COUNT
 from alphavault.ai.topic_cluster_suggest import ai_is_configured, get_ai_config_summary, suggest_topics_for_cluster
-from alphavault.constants import DEFAULT_SPOOL_DIR, ENV_SPOOL_DIR
+from alphavault.constants import (
+    DEFAULT_SPOOL_DIR,
+    ENV_AI_MAX_INFLIGHT,
+    ENV_AI_RETRIES,
+    ENV_AI_RPM,
+    ENV_AI_TIMEOUT_SEC,
+    ENV_SPOOL_DIR,
+)
+from alphavault.rss.utils import RateLimiter, env_float, env_int
 from alphavault.ui.topic_cluster_admin_ai_write import _render_ai_write_section
 from alphavault.ui.topic_cluster_admin_helpers import (
     _build_candidate_records,
@@ -26,6 +36,10 @@ RECOMMENDED_MIN_CHUNK_SIZE = 100
 DEFAULT_CHUNK_SIZE = RECOMMENDED_MIN_CHUNK_SIZE
 MAX_CHUNK_SIZE = 800
 CHUNK_SIZE_STEP = 50
+
+DEFAULT_CLUSTER_AI_RPM = 12.0
+DEFAULT_CLUSTER_AI_MAX_INFLIGHT = 12
+DEFAULT_CLUSTER_AI_TIMEOUT_SEC = 1000.0
 
 
 def _result_state_key(cluster_key: str) -> str:
@@ -135,6 +149,10 @@ def _run_ai_batches(
     cluster_desc: str,
     candidate_records: list[dict],
     chunk_size: int,
+    ai_max_inflight: int,
+    ai_rpm: float,
+    ai_timeout_seconds: float,
+    ai_retries: int,
     selected_cluster: str,
     debug_terminal_logs: bool,
     resume_enabled: bool,
@@ -220,115 +238,197 @@ def _run_ai_batches(
         text=f"准备调用 AI... {start_batch_idx}/{len(chunks)}",
     )
 
-    for idx in range(start_batch_idx, len(chunks) + 1):
-        chunk = chunks[idx - 1]
-        progress.progress(
-            float(idx - 1) / float(len(chunks)),
-            text=f"准备调用 AI... {idx}/{len(chunks)}",
-        )
-        if debug_terminal_logs:
-            print(
-                f"[cluster-ai] call {idx}/{len(chunks)} topics={len(chunk)}",
-                flush=True,
-            )
+    effective_timeout_seconds = max(1.0, float(ai_timeout_seconds))
+    effective_retries = max(0, int(ai_retries))
+    effective_rpm = max(0.0, float(ai_rpm))
 
+    remaining_batches = max(0, int(len(chunks) - start_batch_idx + 1))
+    effective_max_inflight = max(1, int(ai_max_inflight))
+    if remaining_batches > 0:
+        effective_max_inflight = min(effective_max_inflight, remaining_batches)
+
+    limiter = RateLimiter(effective_rpm)
+
+    if debug_terminal_logs:
+        print(
+            " ".join(
+                [
+                    "[cluster-ai] runtime",
+                    f"max_inflight={effective_max_inflight}",
+                    f"rpm={effective_rpm:g}",
+                    f"retries={effective_retries}",
+                    f"timeout={effective_timeout_seconds:g}",
+                ]
+            ),
+            flush=True,
+        )
+
+    def _call_one_batch(chunk: list[dict]) -> dict:
+        limiter.wait()
         start_ts = time.time()
         try:
             part = suggest_topics_for_cluster(
                 cluster_name=cluster_name,
                 description=cluster_desc,
                 candidates=chunk,
+                timeout_seconds=float(effective_timeout_seconds),
+                retries=int(effective_retries),
             )
+            return {"ok": True, "part": part, "sec": max(0.0, time.time() - start_ts)}
         except Exception as exc:
-            cost_sec = max(0.0, time.time() - start_ts)
-            call_logs.append(
-                {
-                    "batch": idx,
-                    "topics": len(chunk),
-                    "sec": round(cost_sec, 2),
-                    "include": 0,
-                    "unsure": 0,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
-            st.session_state[call_logs_key] = call_logs
-            st.session_state[result_key] = merged
-            if resume_enabled:
-                st.session_state[resume_key] = {
-                    "signature": resume_signature,
-                    "next_batch": idx,
-                    "total_batches": len(chunks),
-                    "updated_at": time.time(),
-                }
-                if cache_path is not None:
-                    payload = _build_cache_file_payload(
-                        signature=resume_signature,
-                        next_batch=idx,
-                        total_batches=len(chunks),
-                        merged=merged,
-                        call_logs=call_logs,
+            return {"ok": False, "exc": exc, "sec": max(0.0, time.time() - start_ts)}
+
+    stop_early = False
+    if start_batch_idx <= len(chunks):
+        executor = ThreadPoolExecutor(max_workers=int(effective_max_inflight))
+        futures: dict[int, object] = {}
+        next_submit = int(start_batch_idx)
+
+        def _fill_inflight() -> None:
+            nonlocal next_submit
+            while next_submit <= len(chunks) and len(futures) < int(effective_max_inflight):
+                batch_idx = int(next_submit)
+                chunk = chunks[batch_idx - 1]
+                if debug_terminal_logs:
+                    print(
+                        f"[cluster-ai] submit {batch_idx}/{len(chunks)} topics={len(chunk)}",
+                        flush=True,
                     )
-                    _try_write_cache_file(
-                        cache_path,
-                        payload=payload,
-                        debug_terminal_logs=debug_terminal_logs,
+                futures[batch_idx] = executor.submit(_call_one_batch, chunk)
+                next_submit += 1
+
+        try:
+            _fill_inflight()
+
+            for idx in range(start_batch_idx, len(chunks) + 1):
+                chunk = chunks[idx - 1]
+                progress.progress(
+                    float(idx - 1) / float(len(chunks)),
+                    text=f"AI 处理中... {idx}/{len(chunks)}",
+                )
+
+                fut = futures.get(idx)
+                if fut is None:
+                    raise RuntimeError("cluster_ai_future_missing")
+
+                outcome = fut.result()
+                futures.pop(idx, None)
+                _fill_inflight()
+
+                cost_sec = float((outcome or {}).get("sec") or 0.0)
+                if not bool((outcome or {}).get("ok")):
+                    exc = (outcome or {}).get("exc")
+                    err_text = f"{type(exc).__name__}: {exc}" if exc is not None else "unknown_error"
+                    stop_early = True
+
+                    for other in futures.values():
+                        try:
+                            other.cancel()
+                        except Exception:
+                            pass
+
+                    call_logs.append(
+                        {
+                            "batch": idx,
+                            "topics": len(chunk),
+                            "sec": round(cost_sec, 2),
+                            "include": 0,
+                            "unsure": 0,
+                            "error": err_text,
+                        }
                     )
-            log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
-            if debug_terminal_logs:
-                print(
-                    f"[cluster-ai] error {idx}/{len(chunks)} sec={cost_sec:.2f} {type(exc).__name__}: {exc}",
-                    flush=True,
+                    st.session_state[call_logs_key] = call_logs
+                    st.session_state[result_key] = merged
+                    if resume_enabled:
+                        st.session_state[resume_key] = {
+                            "signature": resume_signature,
+                            "next_batch": idx,
+                            "total_batches": len(chunks),
+                            "updated_at": time.time(),
+                        }
+                        if cache_path is not None:
+                            payload = _build_cache_file_payload(
+                                signature=resume_signature,
+                                next_batch=idx,
+                                total_batches=len(chunks),
+                                merged=merged,
+                                call_logs=call_logs,
+                            )
+                            _try_write_cache_file(
+                                cache_path,
+                                payload=payload,
+                                debug_terminal_logs=debug_terminal_logs,
+                            )
+                    log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
+                    if debug_terminal_logs:
+                        print(
+                            f"[cluster-ai] error {idx}/{len(chunks)} sec={cost_sec:.2f} {err_text}",
+                            flush=True,
+                        )
+                    st.error(f"AI 失败（第 {idx}/{len(chunks)} 批）：{err_text}")
+                    st.stop()
+
+                part = (outcome or {}).get("part")
+                if not isinstance(part, dict):
+                    raise RuntimeError("ai_invalid_json")
+
+                include_n = (
+                    len(part.get("include_topics") or []) if isinstance(part.get("include_topics"), list) else 0
                 )
-            st.error(f"AI 失败（第 {idx}/{len(chunks)} 批）：{type(exc).__name__}: {exc}")
-            st.stop()
-
-        cost_sec = max(0.0, time.time() - start_ts)
-        include_n = len(part.get("include_topics") or []) if isinstance(part.get("include_topics"), list) else 0
-        unsure_n = len(part.get("unsure_topics") or []) if isinstance(part.get("unsure_topics"), list) else 0
-        call_logs.append(
-            {
-                "batch": idx,
-                "topics": len(chunk),
-                "sec": round(cost_sec, 2),
-                "include": include_n,
-                "unsure": unsure_n,
-                "error": "",
-            }
-        )
-        st.session_state[call_logs_key] = call_logs
-        log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
-
-        if debug_terminal_logs:
-            print(
-                f"[cluster-ai] batch {idx}/{len(chunks)} topics={len(chunk)} sec={cost_sec:.2f} "
-                f"include={include_n} unsure={unsure_n}",
-                flush=True,
-            )
-
-        for key in ["include_topics", "unsure_topics"]:
-            items = part.get(key)
-            if isinstance(items, list):
-                merged[key].extend(items)
-
-        st.session_state[result_key] = merged
-        if resume_enabled:
-            st.session_state[resume_key] = {
-                "signature": resume_signature,
-                "next_batch": idx + 1,
-                "total_batches": len(chunks),
-                "updated_at": time.time(),
-            }
-            if cache_path is not None:
-                payload = _build_cache_file_payload(
-                    signature=resume_signature,
-                    next_batch=idx + 1,
-                    total_batches=len(chunks),
-                    merged=merged,
-                    call_logs=call_logs,
+                unsure_n = (
+                    len(part.get("unsure_topics") or []) if isinstance(part.get("unsure_topics"), list) else 0
                 )
-                _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
+                call_logs.append(
+                    {
+                        "batch": idx,
+                        "topics": len(chunk),
+                        "sec": round(cost_sec, 2),
+                        "include": include_n,
+                        "unsure": unsure_n,
+                        "error": "",
+                    }
+                )
+                st.session_state[call_logs_key] = call_logs
+                log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
 
-        progress.progress(float(idx) / float(len(chunks)), text=f"AI 处理中... {idx}/{len(chunks)}")
+                if debug_terminal_logs:
+                    print(
+                        f"[cluster-ai] batch {idx}/{len(chunks)} topics={len(chunk)} sec={cost_sec:.2f} "
+                        f"include={include_n} unsure={unsure_n}",
+                        flush=True,
+                    )
+
+                for key in ["include_topics", "unsure_topics"]:
+                    items = part.get(key)
+                    if isinstance(items, list):
+                        merged[key].extend(items)
+
+                st.session_state[result_key] = merged
+                if resume_enabled:
+                    st.session_state[resume_key] = {
+                        "signature": resume_signature,
+                        "next_batch": idx + 1,
+                        "total_batches": len(chunks),
+                        "updated_at": time.time(),
+                    }
+                    if cache_path is not None:
+                        payload = _build_cache_file_payload(
+                            signature=resume_signature,
+                            next_batch=idx + 1,
+                            total_batches=len(chunks),
+                            merged=merged,
+                            call_logs=call_logs,
+                        )
+                        _try_write_cache_file(
+                            cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs
+                        )
+
+                progress.progress(
+                    float(idx) / float(len(chunks)),
+                    text=f"AI 处理中... {idx}/{len(chunks)}",
+                )
+        finally:
+            executor.shutdown(wait=not stop_early, cancel_futures=True)
 
     st.session_state[result_key] = merged
     st.session_state[call_logs_key] = call_logs
@@ -429,6 +529,72 @@ def _render_ai_section(
                 f"你现在每批是 {chunk_size} 个 topic_key。这样 AI 要调用很多次，会更慢、也更费。"
                 f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}（default={DEFAULT_CHUNK_SIZE}）。"
             )
+
+        st.divider()
+        st.markdown("**稳定性参数（可改；默认读 env）**")
+
+        rpm_env = env_float(ENV_AI_RPM)
+        default_rpm = float(rpm_env) if rpm_env is not None else float(DEFAULT_CLUSTER_AI_RPM)
+        ai_rpm = float(
+            st.number_input(
+                "限速 AI_RPM（每分钟调用次数；0=不限）",
+                min_value=0.0,
+                max_value=2000.0,
+                value=float(default_rpm),
+                step=1.0,
+                help="想稳一点：调小；想快一点：调大或设 0（不限）。",
+                key="cluster_ai_rpm_input",
+            )
+        )
+
+        max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
+        default_max_inflight = (
+            int(max_inflight_env) if max_inflight_env is not None else int(DEFAULT_CLUSTER_AI_MAX_INFLIGHT)
+        )
+        default_max_inflight = max(1, int(default_max_inflight))
+        ai_max_inflight = int(
+            st.number_input(
+                "并发 AI_MAX_INFLIGHT（一次最多同时跑几批）",
+                min_value=1,
+                max_value=200,
+                value=int(default_max_inflight),
+                step=1,
+                help="越大越快，但更容易被限流/失败；想稳：设 1。",
+                key="cluster_ai_max_inflight_input",
+            )
+        )
+
+        retries_env = env_int(ENV_AI_RETRIES)
+        default_retries = int(retries_env) if retries_env is not None else int(DEFAULT_AI_RETRY_COUNT)
+        default_retries = max(0, int(default_retries))
+        ai_retries = int(
+            st.number_input(
+                "重试 AI_RETRIES（失败后最多再试几次）",
+                min_value=0,
+                max_value=50,
+                value=int(default_retries),
+                step=1,
+                help="越大越稳，但更慢。",
+                key="cluster_ai_retries_input",
+            )
+        )
+
+        timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
+        default_timeout_sec = (
+            float(timeout_env) if timeout_env is not None else float(DEFAULT_CLUSTER_AI_TIMEOUT_SEC)
+        )
+        default_timeout_sec = max(1.0, float(default_timeout_sec))
+        ai_timeout_sec = float(
+            st.number_input(
+                "超时 AI_TIMEOUT_SEC（秒）",
+                min_value=1.0,
+                max_value=20000.0,
+                value=float(default_timeout_sec),
+                step=10.0,
+                help="单次调用超过这个时间就会当失败，然后按重试次数再试。",
+                key="cluster_ai_timeout_sec_input",
+            )
+        )
 
     topic_keys = [str(x).strip() for x in counts_series.index.tolist() if str(x).strip()]
     topic_keys = topic_keys[: int(max_total_topics)]
@@ -552,6 +718,10 @@ def _render_ai_section(
             cluster_desc=cluster_desc,
             candidate_records=candidate_records,
             chunk_size=int(chunk_size),
+            ai_max_inflight=int(ai_max_inflight),
+            ai_rpm=float(ai_rpm),
+            ai_timeout_seconds=float(ai_timeout_sec),
+            ai_retries=int(ai_retries),
             selected_cluster=selected_cluster,
             debug_terminal_logs=bool(debug_terminal_logs),
             resume_enabled=bool(resume_enabled),

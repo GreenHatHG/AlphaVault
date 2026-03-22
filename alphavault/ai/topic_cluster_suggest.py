@@ -140,6 +140,8 @@ def suggest_topics_for_cluster(
     description: str,
     candidates: List[Dict[str, Any]],
     max_items_per_list: int = 200,
+    timeout_seconds: float | None = None,
+    retries: int | None = None,
 ) -> Dict[str, Any]:
     """
     Ask AI to classify topic_key candidates into include/unsure.
@@ -150,6 +152,14 @@ def suggest_topics_for_cluster(
     config, err = _get_ai_config_from_env()
     if config is None:
         raise RuntimeError(err or "ai_not_configured")
+
+    effective_timeout_seconds = (
+        float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
+    )
+    effective_timeout_seconds = max(1.0, effective_timeout_seconds)
+
+    effective_retries = int(retries) if retries is not None else int(config.retries)
+    effective_retries = max(0, effective_retries)
 
     cluster_name = clean_text(cluster_name)
     description = clean_text(description)
@@ -186,8 +196,8 @@ def suggest_topics_for_cluster(
         model_name=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
-        timeout_seconds=float(config.timeout_seconds),
-        retry_count=int(config.retries),
+        timeout_seconds=float(effective_timeout_seconds),
+        retry_count=int(effective_retries),
         temperature=float(config.temperature),
         reasoning_effort=str(config.reasoning_effort),
         trace_out=None,
