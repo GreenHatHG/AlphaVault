@@ -18,10 +18,38 @@ TOPIC_CLUSTER_POST_OVERRIDES_TABLE = "topic_cluster_post_overrides"
 TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
 TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_ignore_readonly_isolation_level"
 
 
 def turso_connect_autocommit(engine: Engine) -> Connection:
-    # Use AUTOCOMMIT to avoid DBAPI commit()/rollback(), which may panic in some libsql builds.
+    """
+    Return a Connection that behaves like AUTOCOMMIT for Turso (libsql).
+
+    Why:
+    - Avoid DBAPI commit()/rollback(), which may panic in some libsql builds.
+    - Some libsql DBAPI connections expose a read-only `isolation_level`, which breaks
+      SQLAlchemy's default SQLite isolation_level setter.
+    """
+    dialect = getattr(engine, "dialect", None)
+    if dialect is not None and not getattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False):
+        original_set_isolation_level = getattr(dialect, "set_isolation_level", None)
+
+        if callable(original_set_isolation_level):
+
+            def _patched_set_isolation_level(dbapi_connection, level):  # type: ignore[no-untyped-def]
+                try:
+                    return original_set_isolation_level(dbapi_connection, level)
+                except AttributeError as exc:
+                    # libsql may expose a read-only Connection.isolation_level
+                    # This can happen both when setting AUTOCOMMIT and when SQLAlchemy resets the connection
+                    # characteristics on close / return-to-pool.
+                    if "isolation_level" in str(exc):
+                        return None
+                    raise
+
+            dialect.set_isolation_level = _patched_set_isolation_level  # type: ignore[assignment]
+            setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
+
     return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
 
 
