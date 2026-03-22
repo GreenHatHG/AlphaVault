@@ -14,6 +14,18 @@ DEFAULT_AI_RETRY_BACKOFF_SEC = 2.0
 DEFAULT_AI_RETRY_MAX_BACKOFF_SEC = 32.0
 
 
+class AiInvalidJsonError(RuntimeError):
+    """
+    Raised when the model returns non-JSON text (or JSON parsing fails).
+
+    Keep raw_ai_text for downstream logging (but callers should print only a short tail).
+    """
+
+    def __init__(self, message: str, *, raw_ai_text: str) -> None:
+        super().__init__(message)
+        self.raw_ai_text = str(raw_ai_text or "")
+
+
 def _call_ai_with_litellm(
     *,
     prompt: str,
@@ -79,7 +91,13 @@ def _call_ai_with_litellm(
             else:
                 raw_text = _extract_ai_text(response)
 
-            parsed = parse_json_text(raw_text)
+            try:
+                parsed = parse_json_text(raw_text)
+            except Exception as parse_exc:
+                raise AiInvalidJsonError(
+                    f"ai_invalid_json:{type(parse_exc).__name__}",
+                    raw_ai_text=raw_text,
+                ) from parse_exc
             _append_trace(
                 trace_out,
                 {
@@ -127,4 +145,3 @@ def _call_ai_with_litellm(
 
     assert last_error is not None
     raise last_error
-

@@ -24,9 +24,9 @@ xueqiu_batch.sqlite3-wal
 .DS_Store
 *.log
 
-# Local data dumps
-weibo/
-weibo1/
+# Local data dumps (root only; don't ignore alphavault/weibo package)
+/weibo/
+/weibo1/
 *.csv
 
 # Trace files

@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 
 import streamlit as st
-from dotenv import load_dotenv
 
 from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.env import load_dotenv_if_present
 from alphavault.topic_cluster import enrich_assertions_with_clusters
 from alphavault.ui.data import (
     enrich_assertions,
@@ -27,7 +27,7 @@ from alphavault.ui.tab_risk import show_risk_radar
 from alphavault.ui.tab_trade import show_trade_flow
 from alphavault.ui.topic_cluster_admin import show_topic_cluster_admin
 
-load_dotenv()
+load_dotenv_if_present()
 
 
 def main() -> None:

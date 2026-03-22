@@ -17,6 +17,9 @@ from alphavault.constants import (
     ENV_TURSO_DATABASE_URL,
 )
 from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.env import load_dotenv_if_present
+
+load_dotenv_if_present()
 
 
 HEALTHCHECK_TABLE = "__alphavault_healthcheck"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,14 +29,19 @@ from alphavault.ai.analyze import (
     DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
     AnalyzeResult,
+    _call_ai_with_litellm,
     analyze_with_litellm,
     format_llm_error_one_line,
+    normalize_action,
     validate_and_adjust_assertions,
 )
+from alphavault.ai._client import AiInvalidJsonError
+from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
 from alphavault.db.turso_db import get_turso_engine_from_env
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
     load_cloud_post,
+    load_recent_posts_by_author,
     mark_ai_error,
     recover_done_without_processed_at,
     recover_stuck_ai_tasks,
@@ -61,6 +67,13 @@ from alphavault.worker.cli import (
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
+
+from alphavault.weibo.topic_prompt_tree import (
+    MAX_NODE_TEXT_CHARS,
+    MAX_THREAD_POSTS,
+    build_topic_runtime_context,
+    thread_root_info_for_post,
+)
 
 
 @dataclass
@@ -131,6 +144,344 @@ def _backoff_seconds(retry_count: int) -> int:
     return int(min(3600, delay))
 
 
+def _to_one_line_tail(value: str, *, max_chars: int) -> str:
+    s = str(value or "")
+    s = " ".join(s.split())
+    if max_chars <= 0 or len(s) <= max_chars:
+        return s
+    return s[-max_chars:]
+
+
+def _clamp_int(value: object, low: int, high: int, default: int) -> int:
+    try:
+        v = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return int(default)
+    return int(max(low, min(high, v)))
+
+
+def _clamp_float(value: object, low: float, high: float, default: float) -> float:
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except Exception:
+        return float(default)
+    return float(max(low, min(high, v)))
+
+
+def _as_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    return []
+
+
+def _map_topic_prompt_items_to_assertions(
+    *,
+    ai_result: dict[str, object],
+    focus_username: str,
+    message_lookup: dict[tuple[str, str], dict[str, object]],
+    post_uid_by_platform_post_id: dict[str, str],
+    max_assertions_per_post: int = 5,
+) -> dict[str, list[dict[str, object]]]:
+    """
+    Convert topic-prompt-v3 items -> per-post assertions rows (AlphaVault schema).
+
+    We only accept items that:
+    - speaker == focus_username
+    - have evidence_refs pointing to a known post platform_post_id (leaf "status" nodes)
+    """
+    focus = str(focus_username or "").strip()
+    items = ai_result.get("items")
+    if not isinstance(items, list):
+        raise RuntimeError("ai_topic_items_missing")
+
+    out: dict[str, list[dict[str, object]]] = {}
+    for raw_item in items:
+        if not isinstance(raw_item, dict):
+            continue
+
+        speaker = str(raw_item.get("speaker") or "").strip()
+        if focus and speaker != focus:
+            continue
+
+        topic_key = str(raw_item.get("topic_key") or "").strip()
+        if not topic_key:
+            continue
+
+        evidence_refs = raw_item.get("evidence_refs")
+        refs = evidence_refs if isinstance(evidence_refs, list) else []
+        first_ref = refs[0] if refs and isinstance(refs[0], dict) else {}
+        source_kind = str(first_ref.get("source_kind") or "").strip()
+        source_id = str(first_ref.get("source_id") or "").strip()
+        quote = str(first_ref.get("quote") or "").strip()
+        if not source_id:
+            continue
+
+        post_uid = post_uid_by_platform_post_id.get(source_id)
+        if not post_uid:
+            continue
+
+        lookup_key = (source_kind, source_id)
+        node = message_lookup.get(lookup_key)
+        if node is None and source_id:
+            node = message_lookup.get(("status", source_id))
+        node_text = str((node or {}).get("text") or "")
+
+        evidence = quote if quote and node_text and quote in node_text else (node_text[:120] if node_text else quote)
+        if not evidence:
+            continue
+
+        summary = str(raw_item.get("summary") or "").strip() or "未提供摘要"
+        confidence = _clamp_float(raw_item.get("confidence"), 0.0, 1.0, 0.5)
+        action_strength = _clamp_int(raw_item.get("action_strength"), 0, 3, 1)
+        action = normalize_action(str(raw_item.get("action") or "").strip() or "trade.watch")
+
+        row = {
+            "topic_key": topic_key,
+            "action": action,
+            "action_strength": action_strength,
+            "summary": summary,
+            "evidence": evidence,
+            "confidence": confidence,
+            "stock_codes_json": json.dumps(_as_str_list(raw_item.get("stock_codes")), ensure_ascii=False),
+            "stock_names_json": json.dumps(_as_str_list(raw_item.get("stock_names")), ensure_ascii=False),
+            "industries_json": json.dumps(_as_str_list(raw_item.get("industries")), ensure_ascii=False),
+            "commodities_json": json.dumps(_as_str_list(raw_item.get("commodities")), ensure_ascii=False),
+            "indices_json": json.dumps(_as_str_list(raw_item.get("indices")), ensure_ascii=False),
+        }
+        bucket = out.setdefault(post_uid, [])
+        if len(bucket) < max(0, int(max_assertions_per_post)):
+            bucket.append(row)
+
+    return out
+
+
+def _process_one_post_uid_topic_prompt_v3(
+    *,
+    engine: Engine,
+    post_uid: str,
+    config: LLMConfig,
+    limiter: RateLimiter,
+) -> None:
+    post = load_cloud_post(engine, post_uid)
+    focus = str(post.author or "").strip()
+    root_key, root_segment, root_content_key = thread_root_info_for_post(
+        raw_text=post.raw_text or "",
+        display_md=post.display_md or "",
+        author=focus,
+    )
+
+    # Scan recent posts from the same author, then keep only the same "root_key" thread.
+    recent = load_recent_posts_by_author(engine, author=focus, limit=200)
+    current_row = {
+        "post_uid": post.post_uid,
+        "platform_post_id": post.platform_post_id,
+        "author": post.author,
+        "created_at": post.created_at,
+        "url": post.url,
+        "raw_text": post.raw_text,
+        "display_md": post.display_md,
+        "processed_at": "",
+        "ai_status": "running",
+        "ai_retry_count": int(post.ai_retry_count or 0),
+    }
+
+    thread_rows: list[dict[str, object]] = []
+    seen_uids: set[str] = set()
+    for row in [current_row, *recent]:
+        uid = str(row.get("post_uid") or "").strip()
+        if not uid or uid in seen_uids:
+            continue
+        seen_uids.add(uid)
+
+        is_current = uid == str(post.post_uid or "").strip()
+        ai_status = str(row.get("ai_status") or "").strip().lower()
+        if not is_current and ai_status not in {"pending", "error"}:
+            continue
+
+        rk, _seg, _ck = thread_root_info_for_post(
+            raw_text=str(row.get("raw_text") or ""),
+            display_md=str(row.get("display_md") or ""),
+            author=str(row.get("author") or "").strip(),
+        )
+        if rk != root_key:
+            continue
+        thread_rows.append(row)
+
+    post_count = len(thread_rows)
+    thread_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    kept = thread_rows[:MAX_THREAD_POSTS] if post_count > MAX_THREAD_POSTS else thread_rows
+    if str(post.post_uid or "").strip() not in {str(r.get("post_uid") or "").strip() for r in kept}:
+        kept = [current_row, *kept[: max(0, MAX_THREAD_POSTS - 1)]]
+    trimmed_count = max(0, post_count - len(kept))
+
+    # Lock additional posts in this thread (best-effort), so we can write results back once.
+    locked_post_uids: list[str] = [post.post_uid]
+    locked_set: set[str] = {post.post_uid}
+    now_epoch = int(time.time())
+    for row in kept:
+        uid = str(row.get("post_uid") or "").strip()
+        if not uid or uid in locked_set:
+            continue
+        ai_status = str(row.get("ai_status") or "").strip().lower()
+        if ai_status not in {"pending", "error"}:
+            continue
+        try:
+            if try_mark_ai_running(engine, post_uid=uid, now_epoch=now_epoch):
+                locked_post_uids.append(uid)
+                locked_set.add(uid)
+        except Exception:
+            continue
+
+    runtime_context, truncated_nodes = build_topic_runtime_context(
+        root_key=root_key,
+        root_segment=root_segment,
+        root_content_key=root_content_key,
+        focus_username=focus,
+        posts=kept,
+        max_node_text_chars=MAX_NODE_TEXT_CHARS,
+    )
+    if trimmed_count > 0 or truncated_nodes > 0:
+        print(
+            " ".join(
+                [
+                    "[ai_topic] tree_trim",
+                    f"author={focus or '(empty)'}",
+                    f"root_key={root_key}",
+                    f"post_count={post_count}",
+                    f"trimmed_count={trimmed_count}",
+                    f"max_nodes={MAX_THREAD_POSTS}",
+                    f"max_chars={MAX_NODE_TEXT_CHARS}",
+                    f"truncated_nodes={truncated_nodes}",
+                ]
+            ),
+            flush=True,
+        )
+
+    ai_topic_package = runtime_context.get("ai_topic_package")
+    if not isinstance(ai_topic_package, dict):
+        raise RuntimeError("ai_topic_package_invalid")
+
+    prompt = build_topic_prompt(ai_topic_package=ai_topic_package)
+    trace_label = f"topic:{root_key}"
+
+    if config.verbose:
+        print(f"[llm] call_api topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)}", flush=True)
+
+    retry_count_by_uid = {
+        str(row.get("post_uid") or "").strip(): int(row.get("ai_retry_count") or 1)
+        for row in kept
+        if str(row.get("post_uid") or "").strip()
+    }
+
+    try:
+        limiter.wait()
+        start_ts = time.time()
+        parsed = _call_ai_with_litellm(
+            prompt=prompt,
+            api_mode=str(config.api_mode or DEFAULT_AI_MODE),
+            ai_stream=bool(config.ai_stream),
+            model_name=str(config.model or DEFAULT_MODEL),
+            base_url=str(config.base_url or ""),
+            api_key=str(config.api_key or ""),
+            timeout_seconds=float(config.ai_timeout_seconds),
+            retry_count=int(config.ai_retries),
+            temperature=float(config.ai_temperature),
+            reasoning_effort=str(config.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT),
+            trace_out=config.trace_out,
+            trace_label=trace_label,
+        )
+
+        if config.verbose:
+            cost = time.time() - start_ts
+            print(f"[llm] done topic_prompt_v3 root_key={root_key} cost={cost:.1f}s", flush=True)
+
+        if not isinstance(parsed, dict):
+            raise RuntimeError("ai_topic_invalid_json_root")
+
+        message_lookup = runtime_context.get("message_lookup")
+        if not isinstance(message_lookup, dict):
+            raise RuntimeError("ai_topic_message_lookup_invalid")
+
+        post_uid_by_pid = {
+            str(row.get("platform_post_id") or "").strip(): str(row.get("post_uid") or "").strip()
+            for row in kept
+            if str(row.get("post_uid") or "").strip() in locked_set
+        }
+        assertions_by_post_uid = _map_topic_prompt_items_to_assertions(
+            ai_result=parsed,
+            focus_username=focus,
+            message_lookup=message_lookup,  # type: ignore[arg-type]
+            post_uid_by_platform_post_id=post_uid_by_pid,
+            max_assertions_per_post=5,
+        )
+
+        for uid in locked_post_uids:
+            rows = assertions_by_post_uid.get(uid, [])
+            is_relevant = bool(rows)
+            final_status = "relevant" if is_relevant else "irrelevant"
+            invest_score = 1.0 if is_relevant else 0.0
+            write_assertions_and_mark_done(
+                engine,
+                post_uid=uid,
+                final_status=final_status,
+                invest_score=invest_score,
+                processed_at=now_str(),
+                model=config.model,
+                prompt_version=config.prompt_version,
+                archived_at=now_str(),
+                ai_result_json=None,
+                assertions=rows,
+            )
+    except Exception as e:
+        if isinstance(e, AiInvalidJsonError):
+            raw_tail = _to_one_line_tail(getattr(e, "raw_ai_text", ""), max_chars=240)
+            print(
+                " ".join(
+                    [
+                        "[ai_topic] invalid_json",
+                        f"post_uid={post.post_uid}",
+                        f"author={focus or '(empty)'}",
+                        f"root_key={root_key}",
+                        f"prompt_version={config.prompt_version}",
+                        f"raw_ai_len={len(getattr(e, 'raw_ai_text', '') or '')}",
+                        f"raw_ai_tail={raw_tail}",
+                    ]
+                ),
+                flush=True,
+            )
+
+        base_url_for_log = (config.base_url or "").strip()
+        if base_url_for_log:
+            base_url_for_log = base_url_for_log.split("?", 1)[0].split("#", 1)[0]
+            base_url_for_log = base_url_for_log[:220]
+        ctx = (
+            f" cfg_model={config.model}"
+            f" api_mode={config.api_mode}"
+            f" stream={1 if config.ai_stream else 0}"
+            f" base_url={base_url_for_log or '(empty)'}"
+            f" prompt_version={config.prompt_version}"
+        )
+        msg = f"ai:{format_llm_error_one_line(e, limit=700)}{ctx}"
+        now_epoch = int(time.time())
+        for uid in locked_post_uids:
+            retry_count = retry_count_by_uid.get(uid, 1)
+            next_retry = now_epoch + _backoff_seconds(retry_count)
+            try:
+                mark_ai_error(
+                    engine,
+                    post_uid=uid,
+                    error=msg,
+                    next_retry_at=next_retry,
+                    archived_at=now_str(),
+                )
+            except Exception:
+                continue
+        print(f"[llm] error topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)} {msg}", flush=True)
+        return
+
+
 def _process_one_post_uid(
     *,
     engine: Engine,
@@ -139,6 +490,15 @@ def _process_one_post_uid(
     limiter: RateLimiter,
 ) -> None:
     try:
+        if str(config.prompt_version or "").strip() == TOPIC_PROMPT_VERSION:
+            _process_one_post_uid_topic_prompt_v3(
+                engine=engine,
+                post_uid=post_uid,
+                config=config,
+                limiter=limiter,
+            )
+            return
+
         post = load_cloud_post(engine, post_uid)
         analysis_context = build_analysis_context(post.raw_text or "")
         row_meta = build_row_meta(
@@ -214,7 +574,8 @@ def _process_one_post_uid(
         now_epoch = int(time.time())
         retry_count = 1
         try:
-            retry_count = int(post.ai_retry_count or 1)  # type: ignore[name-defined]
+            loaded = load_cloud_post(engine, post_uid)
+            retry_count = int(getattr(loaded, "ai_retry_count", 1) or 1)
         except Exception:
             retry_count = 1
         next_retry = now_epoch + _backoff_seconds(retry_count)

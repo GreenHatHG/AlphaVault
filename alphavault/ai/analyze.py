@@ -17,6 +17,7 @@ from alphavault.constants import (
 from alphavault.ai._client import _call_ai_with_litellm
 from alphavault.ai._errors import extract_llm_error_details, format_llm_error_one_line
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
+from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION
 
 # NOTE: This module is extracted from the old CSV/local-sqlite scripts.
 # It is the public API for AI call + output normalization.
@@ -25,7 +26,7 @@ AI_MODE_COMPLETION = "completion"
 AI_MODE_RESPONSES = "responses"
 
 DEFAULT_MODEL = os.getenv(ENV_AI_MODEL, "openai/gpt-5.2")
-DEFAULT_PROMPT_VERSION = os.getenv(ENV_AI_PROMPT_VERSION, "weibo_assertions_v1")
+DEFAULT_PROMPT_VERSION = os.getenv(ENV_AI_PROMPT_VERSION, TOPIC_PROMPT_VERSION)
 
 DEFAULT_AI_MODE = os.getenv(ENV_AI_API_MODE, AI_MODE_RESPONSES)
 DEFAULT_AI_TEMPERATURE = float(os.getenv(ENV_AI_TEMPERATURE, "0.1"))
