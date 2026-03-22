@@ -183,22 +183,23 @@ def _parse_confidence(raw: object, default_value: float) -> float:
 def _split_new_and_move(
     topic_keys: list[str],
     *,
-    topic_to_cluster: dict[str, str],
+    topic_to_clusters: dict[str, list[str]],
     selected_cluster: str,
-) -> tuple[list[str], list[str], dict[str, str]]:
+) -> tuple[list[str], list[str], dict[str, list[str]]]:
     new_keys: list[str] = []
     move_keys: list[str] = []
-    from_cluster_by_topic: dict[str, str] = {}
+    from_clusters_by_topic: dict[str, list[str]] = {}
     for topic_key in topic_keys:
-        existing_cluster = str(topic_to_cluster.get(topic_key, "") or "").strip()
-        if not existing_cluster:
+        existing_clusters = topic_to_clusters.get(topic_key, [])
+        existing_clusters = [str(x).strip() for x in existing_clusters if str(x).strip()]
+        if not existing_clusters:
             new_keys.append(topic_key)
             continue
-        if existing_cluster == selected_cluster:
+        if selected_cluster in existing_clusters:
             continue
         move_keys.append(topic_key)
-        from_cluster_by_topic[topic_key] = existing_cluster
-    return new_keys, move_keys, from_cluster_by_topic
+        from_clusters_by_topic[topic_key] = existing_clusters
+    return new_keys, move_keys, from_clusters_by_topic
 
 
 def _sort_by_count(items: list[str], *, count_by_topic: dict[str, int]) -> list[str]:
@@ -213,13 +214,19 @@ def _format_basic_topic(topic_key: str, *, count_by_topic: dict[str, int]) -> st
 def _format_move_topic(
     topic_key: str,
     *,
-    from_cluster_by_topic: dict[str, str],
+    from_clusters_by_topic: dict[str, list[str]],
     name_by_key: Dict[str, str],
     count_by_topic: dict[str, int],
 ) -> str:
-    from_key = str(from_cluster_by_topic.get(topic_key, "") or "").strip()
-    from_label = _format_cluster_label(from_key, name_by_key) if from_key else "未知"
+    from_keys = from_clusters_by_topic.get(topic_key, [])
+    from_keys = [str(x).strip() for x in from_keys if str(x).strip()]
+    if from_keys:
+        labels = [_format_cluster_label(k, name_by_key) for k in from_keys[:3]]
+        from_label = " / ".join([x for x in labels if x])
+        if len(from_keys) > 3:
+            from_label = f"{from_label} 等{len(from_keys)}个"
+    else:
+        from_label = "未知"
     count = int(count_by_topic.get(topic_key, 0))
     count_part = f"，{count}次" if count else ""
-    return f"{topic_key}（从 {from_label} 移入{count_part}）"
-
+    return f"{topic_key}（已在 {from_label}，也加入{count_part}）"

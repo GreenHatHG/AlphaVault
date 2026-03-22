@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List
 
 import pandas as pd
 from sqlalchemy import text
@@ -59,7 +59,7 @@ def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame,
 @dataclass(frozen=True)
 class ClusterMaps:
     cluster_name_by_key: Dict[str, str]
-    cluster_by_topic_key: Dict[str, str]
+    cluster_keys_by_topic_key: Dict[str, List[str]]
     cluster_by_post_uid: Dict[str, str]
 
 
@@ -76,13 +76,18 @@ def build_cluster_maps(
             if key:
                 cluster_name_by_key[key] = name
 
-    cluster_by_topic_key: Dict[str, str] = {}
+    cluster_keys_by_topic_key: Dict[str, List[str]] = {}
     if not topic_map.empty:
         for _, row in topic_map.iterrows():
             topic_key = str(row.get("topic_key") or "").strip()
             cluster_key = str(row.get("cluster_key") or "").strip()
             if topic_key and cluster_key:
-                cluster_by_topic_key[topic_key] = cluster_key
+                cluster_keys_by_topic_key.setdefault(topic_key, []).append(cluster_key)
+    if cluster_keys_by_topic_key:
+        for topic_key, keys in list(cluster_keys_by_topic_key.items()):
+            # keep unique + stable (sorted) for deterministic UI.
+            uniq = sorted(set(str(k).strip() for k in keys if str(k).strip()))
+            cluster_keys_by_topic_key[topic_key] = uniq
 
     cluster_by_post_uid: Dict[str, str] = {}
     if not post_overrides.empty:
@@ -94,7 +99,7 @@ def build_cluster_maps(
 
     return ClusterMaps(
         cluster_name_by_key=cluster_name_by_key,
-        cluster_by_topic_key=cluster_by_topic_key,
+        cluster_keys_by_topic_key=cluster_keys_by_topic_key,
         cluster_by_post_uid=cluster_by_post_uid,
     )
 
@@ -110,15 +115,13 @@ def enrich_assertions_with_clusters(
     Add cluster columns on top of existing assertions.
 
     Columns added:
-    - cluster_key: resolved key (topic_map first, then post override)
-    - cluster_name: optional display name from topic_clusters
-    - cluster_display: cluster_name or cluster_key, otherwise '未归类'
+    - cluster_keys: list of resolved keys (topic_map first; if empty then post override)
+    - cluster_displays: list of display names (cluster_name or cluster_key); if empty then ['未归类']
     """
     if assertions.empty:
         out = assertions.copy()
-        out["cluster_key"] = ""
-        out["cluster_name"] = ""
-        out["cluster_display"] = UNCATEGORIZED_LABEL
+        out["cluster_keys"] = [[] for _ in range(len(out))]
+        out["cluster_displays"] = [[UNCATEGORIZED_LABEL] for _ in range(len(out))]
         return out
 
     maps = build_cluster_maps(clusters, topic_map, post_overrides)
@@ -127,18 +130,39 @@ def enrich_assertions_with_clusters(
     topic_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
     post_uids = out.get("post_uid", pd.Series([""] * len(out), index=out.index))
 
-    cluster_key = topic_keys.map(maps.cluster_by_topic_key).fillna("")
-    missing_cluster = cluster_key.astype(str).str.strip().eq("")
-    if missing_cluster.any():
-        cluster_key = cluster_key.where(~missing_cluster, post_uids.map(maps.cluster_by_post_uid).fillna(""))
+    def _cluster_keys_for_topic_and_post(topic_key: object, post_uid: object) -> list[str]:
+        t = str(topic_key or "").strip()
+        if t:
+            keys = maps.cluster_keys_by_topic_key.get(t)
+            if keys:
+                return list(keys)
+        p = str(post_uid or "").strip()
+        if p:
+            override_key = str(maps.cluster_by_post_uid.get(p, "") or "").strip()
+            if override_key:
+                return [override_key]
+        return []
 
-    out["cluster_key"] = cluster_key.astype(str)
-    out["cluster_name"] = out["cluster_key"].map(maps.cluster_name_by_key).fillna("").astype(str)
+    out["cluster_keys"] = [
+        _cluster_keys_for_topic_and_post(topic_key, post_uid)
+        for topic_key, post_uid in zip(topic_keys.tolist(), post_uids.tolist(), strict=False)
+    ]
 
-    display = out["cluster_name"].where(out["cluster_name"].str.strip().ne(""), out["cluster_key"])
-    display = display.fillna("").astype(str)
-    display = display.where(display.str.strip().ne(""), UNCATEGORIZED_LABEL)
-    out["cluster_display"] = display
+    def _displays_for_keys(keys: object) -> list[str]:
+        if not isinstance(keys, list):
+            keys = []
+        out_labels: list[str] = []
+        for key in keys:
+            k = str(key or "").strip()
+            if not k:
+                continue
+            name = str(maps.cluster_name_by_key.get(k, "") or "").strip()
+            out_labels.append(name if name else k)
+        if out_labels:
+            return out_labels
+        return [UNCATEGORIZED_LABEL]
+
+    out["cluster_displays"] = out["cluster_keys"].apply(_displays_for_keys)
     return out
 
 
@@ -210,8 +234,7 @@ def upsert_cluster_topics(
                     topic_key, cluster_key, source, confidence, created_at
                 )
                 VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key) DO UPDATE SET
-                    cluster_key = excluded.cluster_key,
+                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
                     source = excluded.source,
                     confidence = excluded.confidence,
                     created_at = excluded.created_at
@@ -270,8 +293,7 @@ def upsert_cluster_topics_detailed(
                     topic_key, cluster_key, source, confidence, created_at
                 )
                 VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key) DO UPDATE SET
-                    cluster_key = excluded.cluster_key,
+                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
                     source = excluded.source,
                     confidence = excluded.confidence,
                     created_at = excluded.created_at
@@ -282,17 +304,25 @@ def upsert_cluster_topics_detailed(
     return len(payloads)
 
 
-def delete_cluster_topics(engine: Engine, *, topic_keys: Iterable[str]) -> int:
+def delete_cluster_topics(engine: Engine, *, cluster_key: str, topic_keys: Iterable[str]) -> int:
     items = [str(item or "").strip() for item in topic_keys]
     items = [item for item in items if item]
     if not items:
+        return 0
+    key = str(cluster_key or "").strip()
+    if not key:
         return 0
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
             for topic_key in items:
                 conn.execute(
-                    text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE topic_key = :topic_key"),
-                    {"topic_key": topic_key},
+                    text(
+                        f"""
+                        DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE}
+                        WHERE topic_key = :topic_key AND cluster_key = :cluster_key
+                        """
+                    ),
+                    {"topic_key": topic_key, "cluster_key": key},
                 )
     return len(items)
 

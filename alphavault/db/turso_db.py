@@ -20,6 +20,8 @@ TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_ignore_readonly_isolation_level"
 
+TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
+
 
 def turso_connect_autocommit(engine: Engine) -> Connection:
     """
@@ -75,6 +77,89 @@ def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Conne
         conn.execute(text(f"RELEASE {savepoint}"))
 
 
+def _topic_cluster_topics_pk_cols(conn) -> list[str]:
+    try:
+        rows = conn.execute(text(f"PRAGMA table_info({TOPIC_CLUSTER_TOPICS_TABLE})")).mappings().all()
+    except Exception:
+        return []
+    if not rows:
+        return []
+    ordered = sorted(rows, key=lambda r: int(r.get("pk") or 0))
+    cols = [str(r.get("name") or "").strip() for r in ordered if int(r.get("pk") or 0) > 0]
+    return [c for c in cols if c]
+
+
+def _migrate_topic_cluster_topics_to_v2(conn) -> None:
+    """
+    Migrate v1 schema -> v2 schema (topic_key PK -> (topic_key, cluster_key) PK).
+
+    Keep it simple and safe:
+    - create a new table
+    - copy old data
+    - verify row count
+    - swap tables
+    """
+    # Clean any leftover temp table from a previous failed attempt.
+    conn.execute(text(f"DROP TABLE IF EXISTS {TOPIC_CLUSTER_TOPICS_V2_TABLE}"))
+
+    conn.execute(
+        text(
+            f"""
+            CREATE TABLE {TOPIC_CLUSTER_TOPICS_V2_TABLE} (
+                topic_key TEXT NOT NULL,
+                cluster_key TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'manual',
+                confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (topic_key, cluster_key)
+            );
+            """
+        )
+    )
+
+    conn.execute(
+        text(
+            f"""
+            INSERT OR IGNORE INTO {TOPIC_CLUSTER_TOPICS_V2_TABLE}(
+                topic_key, cluster_key, source, confidence, created_at
+            )
+            SELECT topic_key, cluster_key, source, confidence, created_at
+            FROM {TOPIC_CLUSTER_TOPICS_TABLE}
+            """
+        )
+    )
+
+    old_n = int(
+        (
+            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_TABLE}"))
+            .mappings()
+            .first()
+            or {}
+        ).get("n")
+        or 0
+    )
+    new_n = int(
+        (
+            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_V2_TABLE}"))
+            .mappings()
+            .first()
+            or {}
+        ).get("n")
+        or 0
+    )
+    if new_n < old_n:
+        raise RuntimeError(
+            f"topic_cluster_topics migrate failed: copied_rows={new_n} < old_rows={old_n}"
+        )
+
+    conn.execute(text(f"DROP TABLE {TOPIC_CLUSTER_TOPICS_TABLE}"))
+    conn.execute(
+        text(
+            f"ALTER TABLE {TOPIC_CLUSTER_TOPICS_V2_TABLE} RENAME TO {TOPIC_CLUSTER_TOPICS_TABLE}"
+        )
+    )
+
+
 def ensure_turso_engine(url: str, token: str) -> Engine:
     if not url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
@@ -118,11 +203,12 @@ def init_topic_cluster_schema(engine: Engine) -> None:
     """
     ddl_topics = f"""
     CREATE TABLE IF NOT EXISTS {TOPIC_CLUSTER_TOPICS_TABLE} (
-        topic_key TEXT PRIMARY KEY,
+        topic_key TEXT NOT NULL,
         cluster_key TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'manual',
         confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (topic_key, cluster_key)
     );
     """
     ddl_overrides = f"""
@@ -144,6 +230,12 @@ def init_topic_cluster_schema(engine: Engine) -> None:
         conn.execute(text(ddl_clusters))
         conn.execute(text(ddl_topics))
         conn.execute(text(ddl_overrides))
+
+        # v1 -> v2 schema migration (topic_key -> (topic_key, cluster_key)).
+        pk_cols = _topic_cluster_topics_pk_cols(conn)
+        if pk_cols == ["topic_key"]:
+            _migrate_topic_cluster_topics_to_v2(conn)
+
         for stmt in idx_sql.strip().split(";\n"):
             if stmt.strip():
                 conn.execute(text(stmt))

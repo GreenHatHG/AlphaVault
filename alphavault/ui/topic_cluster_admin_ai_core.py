@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
 import time
+from pathlib import Path
 from typing import Dict
 
 import pandas as pd
@@ -8,6 +13,7 @@ import streamlit as st
 from sqlalchemy.engine import Engine
 
 from alphavault.ai.topic_cluster_suggest import ai_is_configured, get_ai_config_summary, suggest_topics_for_cluster
+from alphavault.constants import DEFAULT_SPOOL_DIR, ENV_SPOOL_DIR
 from alphavault.ui.topic_cluster_admin_ai_write import _render_ai_write_section
 from alphavault.ui.topic_cluster_admin_helpers import (
     _build_candidate_records,
@@ -16,6 +22,113 @@ from alphavault.ui.topic_cluster_admin_helpers import (
     _normalize_topic_items,
     _uniq_str,
 )
+
+MIN_CHUNK_SIZE = 1
+RECOMMENDED_MIN_CHUNK_SIZE = 100
+DEFAULT_CHUNK_SIZE = RECOMMENDED_MIN_CHUNK_SIZE
+MAX_CHUNK_SIZE = 800
+CHUNK_SIZE_STEP = 50
+
+
+def _result_state_key(cluster_key: str) -> str:
+    return f"cluster_ai_result:{str(cluster_key or '').strip()}"
+
+
+def _call_logs_state_key(cluster_key: str) -> str:
+    return f"cluster_ai_call_logs:{str(cluster_key or '').strip()}"
+
+
+def _resume_state_key(cluster_key: str) -> str:
+    return f"cluster_ai_resume_state:{str(cluster_key or '').strip()}"
+
+
+def _resume_enabled_widget_key(cluster_key: str) -> str:
+    return f"cluster_ai_resume_enabled:{str(cluster_key or '').strip()}"
+
+
+def _build_resume_signature(
+    *,
+    cluster_name: str,
+    cluster_desc: str,
+    topic_keys: list[str],
+    max_total_topics: int,
+    chunk_size: int,
+) -> str:
+    # Keep it stable and small, so we can safely decide whether to resume.
+    text = "\n".join([str(x).strip() for x in topic_keys if str(x).strip()])
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    payload = {
+        "cluster_name": str(cluster_name or "").strip(),
+        "cluster_desc": str(cluster_desc or "").strip(),
+        "max_total_topics": int(max_total_topics),
+        "chunk_size": int(chunk_size),
+        "topic_keys_sha1": digest,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+AI_CACHE_FILE_VERSION = 1
+AI_CACHE_SUBDIR = "cluster_ai_cache"
+
+
+def _ai_cache_root_dir() -> Path:
+    base = str(os.getenv(ENV_SPOOL_DIR, DEFAULT_SPOOL_DIR) or "").strip() or DEFAULT_SPOOL_DIR
+    return Path(base) / AI_CACHE_SUBDIR
+
+
+def _safe_cache_file_name(cluster_key: str) -> str:
+    raw = str(cluster_key or "").strip()
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", raw) or "unknown"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10] if raw else "noid"
+    return f"{safe}-{digest}.json"
+
+
+def _cache_file_path(cluster_key: str) -> Path:
+    return _ai_cache_root_dir() / _safe_cache_file_name(cluster_key)
+
+
+def _build_cache_file_payload(
+    *,
+    signature: str,
+    next_batch: int,
+    total_batches: int,
+    merged: dict,
+    call_logs: list[dict],
+) -> dict:
+    return {
+        "version": AI_CACHE_FILE_VERSION,
+        "signature": str(signature or ""),
+        "next_batch": int(next_batch),
+        "total_batches": int(total_batches),
+        "updated_at": time.time(),
+        "merged": merged,
+        "call_logs": call_logs,
+    }
+
+
+def _try_write_cache_file(path: Path, *, payload: dict, debug_terminal_logs: bool) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = Path(str(path) + ".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception as exc:
+        if debug_terminal_logs:
+            print(f"[cluster-ai] cache write failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+def _try_load_cache_file(path: Path) -> dict | None:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if int(data.get("version") or 0) != int(AI_CACHE_FILE_VERSION):
+        return None
+    return data
 
 
 def _run_ai_batches(
@@ -26,30 +139,91 @@ def _run_ai_batches(
     chunk_size: int,
     selected_cluster: str,
     debug_terminal_logs: bool,
+    resume_enabled: bool,
+    resume_signature: str,
+    start_batch_idx: int,
+    merged_seed: dict | None,
+    call_logs_seed: list[dict] | None,
 ) -> None:
     chunks: list[list[dict]] = []
     for i in range(0, len(candidate_records), int(chunk_size)):
         chunks.append(candidate_records[i : i + int(chunk_size)])
 
-    merged: dict = {
-        "include_topics": [],
-        "unsure_topics": [],
-        "exclude_topics": [],
-        "keywords": [],
-        "negative_keywords": [],
-    }
-    call_logs: list[dict] = []
+    result_key = _result_state_key(selected_cluster)
+    call_logs_key = _call_logs_state_key(selected_cluster)
+    resume_key = _resume_state_key(selected_cluster)
+    cache_path = _cache_file_path(selected_cluster) if resume_enabled else None
+
+    if isinstance(merged_seed, dict):
+        merged: dict = dict(merged_seed)
+    else:
+        merged = {}
+    for k in ["include_topics", "unsure_topics", "exclude_topics", "keywords", "negative_keywords"]:
+        if not isinstance(merged.get(k), list):
+            merged[k] = []
+
+    call_logs: list[dict] = call_logs_seed if isinstance(call_logs_seed, list) else []
+
+    if not chunks:
+        st.session_state[result_key] = merged
+        st.session_state[call_logs_key] = call_logs
+        if resume_enabled:
+            st.session_state[resume_key] = {
+                "signature": resume_signature,
+                "next_batch": 1,
+                "total_batches": 0,
+                "updated_at": time.time(),
+            }
+            if cache_path is not None:
+                payload = _build_cache_file_payload(
+                    signature=resume_signature,
+                    next_batch=1,
+                    total_batches=0,
+                    merged=merged,
+                    call_logs=call_logs,
+                )
+                _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
+        return
+
+    start_batch_idx = int(start_batch_idx)
+    start_batch_idx = max(1, min(start_batch_idx, len(chunks) + 1))
+
     progress = st.progress(0.0, text="AI 处理中...")
     log_placeholder = st.empty()
+    if call_logs:
+        log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
+
+    if resume_enabled:
+        st.session_state[resume_key] = {
+            "signature": resume_signature,
+            "next_batch": start_batch_idx,
+            "total_batches": len(chunks),
+            "updated_at": time.time(),
+        }
+        if cache_path is not None:
+            payload = _build_cache_file_payload(
+                signature=resume_signature,
+                next_batch=start_batch_idx,
+                total_batches=len(chunks),
+                merged=merged,
+                call_logs=call_logs,
+            )
+            _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
 
     if debug_terminal_logs:
         print(
             f"[cluster-ai] start cluster={cluster_name} total_topics={len(candidate_records)} "
-            f"chunk_size={int(chunk_size)} calls={len(chunks)}",
+            f"chunk_size={int(chunk_size)} calls={len(chunks)} start_batch={start_batch_idx}",
             flush=True,
         )
 
-    for idx, chunk in enumerate(chunks, start=1):
+    progress.progress(
+        float(max(0, start_batch_idx - 1)) / float(len(chunks)),
+        text=f"准备调用 AI... {start_batch_idx}/{len(chunks)}",
+    )
+
+    for idx in range(start_batch_idx, len(chunks) + 1):
+        chunk = chunks[idx - 1]
         progress.progress(
             float(idx - 1) / float(len(chunks)),
             text=f"准备调用 AI... {idx}/{len(chunks)}",
@@ -80,7 +254,28 @@ def _run_ai_batches(
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
-            st.session_state[f"cluster_ai_call_logs:{selected_cluster}"] = call_logs
+            st.session_state[call_logs_key] = call_logs
+            st.session_state[result_key] = merged
+            if resume_enabled:
+                st.session_state[resume_key] = {
+                    "signature": resume_signature,
+                    "next_batch": idx,
+                    "total_batches": len(chunks),
+                    "updated_at": time.time(),
+                }
+                if cache_path is not None:
+                    payload = _build_cache_file_payload(
+                        signature=resume_signature,
+                        next_batch=idx,
+                        total_batches=len(chunks),
+                        merged=merged,
+                        call_logs=call_logs,
+                    )
+                    _try_write_cache_file(
+                        cache_path,
+                        payload=payload,
+                        debug_terminal_logs=debug_terminal_logs,
+                    )
             log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
             if debug_terminal_logs:
                 print(
@@ -105,7 +300,7 @@ def _run_ai_batches(
                 "error": "",
             }
         )
-        st.session_state[f"cluster_ai_call_logs:{selected_cluster}"] = call_logs
+        st.session_state[call_logs_key] = call_logs
         log_placeholder.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
 
         if debug_terminal_logs:
@@ -124,13 +319,47 @@ def _run_ai_batches(
             if isinstance(items, list):
                 merged[key].extend(items)
 
+        st.session_state[result_key] = merged
+        if resume_enabled:
+            st.session_state[resume_key] = {
+                "signature": resume_signature,
+                "next_batch": idx + 1,
+                "total_batches": len(chunks),
+                "updated_at": time.time(),
+            }
+            if cache_path is not None:
+                payload = _build_cache_file_payload(
+                    signature=resume_signature,
+                    next_batch=idx + 1,
+                    total_batches=len(chunks),
+                    merged=merged,
+                    call_logs=call_logs,
+                )
+                _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
+
         progress.progress(float(idx) / float(len(chunks)), text=f"AI 处理中... {idx}/{len(chunks)}")
 
     merged["keywords"] = _uniq_str(merged.get("keywords", []))
     merged["negative_keywords"] = _uniq_str(merged.get("negative_keywords", []))
 
-    st.session_state[f"cluster_ai_result:{selected_cluster}"] = merged
-    st.session_state[f"cluster_ai_call_logs:{selected_cluster}"] = call_logs
+    st.session_state[result_key] = merged
+    st.session_state[call_logs_key] = call_logs
+    if resume_enabled:
+        st.session_state[resume_key] = {
+            "signature": resume_signature,
+            "next_batch": len(chunks) + 1,
+            "total_batches": len(chunks),
+            "updated_at": time.time(),
+        }
+        if cache_path is not None:
+            payload = _build_cache_file_payload(
+                signature=resume_signature,
+                next_batch=len(chunks) + 1,
+                total_batches=len(chunks),
+                merged=merged,
+                call_logs=call_logs,
+            )
+            _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
 
 
 def _render_ai_section(
@@ -171,18 +400,7 @@ def _render_ai_section(
         st.info("topic_key 全空，无法筛选。")
         return
 
-    only_unmapped = st.checkbox(
-        "只建议未归类 topic_key",
-        value=True,
-        key="cluster_ai_only_unmapped",
-        help="打开：只从“还没进任何板块”的 topic_key 里选。关闭：可能会把别的板块成员也选进来（写入会移动）。",
-    )
-
     counts_series = topic_counts.value_counts()
-    if only_unmapped and not topic_map.empty:
-        mapped = set(topic_map["topic_key"].dropna().astype(str).str.strip().tolist())
-        if mapped:
-            counts_series = counts_series[~counts_series.index.isin(mapped)]
 
     total_topics = int(len(counts_series))
     st.caption(f"候选 topic_key 数量：{total_topics}（将分批让 AI 处理）")
@@ -208,14 +426,23 @@ def _render_ai_section(
         chunk_size = int(
             st.number_input(
                 "每批 topic_key 数量",
-                min_value=100,
-                max_value=800,
-                value=400,
-                step=50,
-                help="每批越大：调用次数更少，但更容易超长；每批越小：更稳，但调用次数更多。",
+                min_value=MIN_CHUNK_SIZE,
+                max_value=MAX_CHUNK_SIZE,
+                value=DEFAULT_CHUNK_SIZE,
+                step=CHUNK_SIZE_STEP,
+                help=(
+                    f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}。"
+                    "每批越大：调用次数更少，但更容易超长；每批越小：更稳，但调用次数更多。"
+                ),
                 key="cluster_ai_chunk_size_input",
             )
         )
+        if chunk_size < RECOMMENDED_MIN_CHUNK_SIZE:
+            # Soft guidance: allow small chunk_size, but warn about time/cost.
+            st.warning(
+                f"你现在每批是 {chunk_size} 个 topic_key。这样 AI 要调用很多次，会更慢、也更费。"
+                f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}（default={DEFAULT_CHUNK_SIZE}）。"
+            )
 
     topic_keys = [str(x).strip() for x in counts_series.index.tolist() if str(x).strip()]
     topic_keys = topic_keys[: int(max_total_topics)]
@@ -229,11 +456,111 @@ def _render_ai_section(
     }
 
     call_count = (len(topic_keys) + int(chunk_size) - 1) // int(chunk_size) if topic_keys else 0
+    resume_enabled = st.checkbox(
+        "断点续跑（失败后继续）",
+        value=True,
+        key=_resume_enabled_widget_key(selected_cluster),
+    )
+
+    resume_key = _resume_state_key(selected_cluster)
+    result_key = _result_state_key(selected_cluster)
+    call_logs_key = _call_logs_state_key(selected_cluster)
+    resume_signature = _build_resume_signature(
+        cluster_name=cluster_name,
+        cluster_desc=cluster_desc,
+        topic_keys=topic_keys,
+        max_total_topics=int(max_total_topics),
+        chunk_size=int(chunk_size),
+    )
+
+    cache_path = _cache_file_path(selected_cluster)
+    if resume_enabled:
+        st.caption(f"缓存文件：{cache_path}")
+        # Load cache from file once per session (best effort).
+        existing_state = st.session_state.get(resume_key)
+        if not isinstance(existing_state, dict):
+            file_cache = _try_load_cache_file(cache_path)
+            if isinstance(file_cache, dict):
+                if str(file_cache.get("signature") or "") == resume_signature:
+                    merged_from_file = file_cache.get("merged")
+                    call_logs_from_file = file_cache.get("call_logs")
+                    if isinstance(merged_from_file, dict):
+                        st.session_state[result_key] = merged_from_file
+                    if isinstance(call_logs_from_file, list):
+                        st.session_state[call_logs_key] = call_logs_from_file
+                    st.session_state[resume_key] = {
+                        "signature": resume_signature,
+                        "next_batch": int(file_cache.get("next_batch") or 1),
+                        "total_batches": int(file_cache.get("total_batches") or 0),
+                        "updated_at": file_cache.get("updated_at", None),
+                    }
+                else:
+                    st.caption("发现旧缓存文件（参数变了）。要么重跑，要么先点“清空缓存”。")
+
+    cached_state = st.session_state.get(resume_key)
+    cached_ok = isinstance(cached_state, dict) and str(cached_state.get("signature") or "") == resume_signature
+    cached_next_batch = 1
+    if cached_ok:
+        try:
+            cached_next_batch = int(cached_state.get("next_batch") or 1)
+        except Exception:
+            cached_next_batch = 1
+        done_batches = max(0, min(call_count, cached_next_batch - 1))
+        st.caption(f"缓存进度：{done_batches}/{call_count} 批")
+    elif isinstance(cached_state, dict) and cached_state:
+        st.caption("发现旧缓存（参数变了）。继续跑会从头跑；也可以先点“清空缓存”。")
+
     if st.button(
-        f"让 AI 分批筛 topic_key（共 {call_count} 次调用）",
+        "清空缓存",
+        type="secondary",
+        key=f"cluster_ai_clear_cache:{selected_cluster}",
+    ):
+        for k in [resume_key, result_key, call_logs_key]:
+            st.session_state.pop(k, None)
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+        except Exception:
+            pass
+        st.rerun()
+
+    if not resume_enabled and cached_ok and 1 <= cached_next_batch <= call_count:
+        st.caption("你关了断点续跑：会从头跑。")
+
+    if resume_enabled and cached_ok and 1 <= cached_next_batch <= call_count:
+        run_label = f"继续跑 AI（从 {cached_next_batch}/{call_count} 批）"
+    elif cached_ok and cached_next_batch > call_count and call_count > 0:
+        run_label = f"重新跑 AI（会覆盖上次结果，共 {call_count} 批）"
+    else:
+        run_label = f"让 AI 分批筛 topic_key（共 {call_count} 次调用）"
+
+    if st.button(
+        run_label,
         type="primary",
         disabled=not bool(topic_keys),
     ):
+        start_batch_idx = 1
+        merged_seed: dict | None = None
+        call_logs_seed: list[dict] | None = None
+        if resume_enabled and cached_ok and 1 <= cached_next_batch <= call_count:
+            start_batch_idx = cached_next_batch
+            merged_seed_raw = st.session_state.get(result_key)
+            merged_seed = merged_seed_raw if isinstance(merged_seed_raw, dict) else None
+
+            call_logs_seed_raw = st.session_state.get(call_logs_key)
+            if isinstance(call_logs_seed_raw, list):
+                call_logs_seed = call_logs_seed_raw
+                if call_logs_seed:
+                    last = call_logs_seed[-1]
+                    if (
+                        str(last.get("error") or "").strip()
+                        and int(last.get("batch") or 0) == int(start_batch_idx)
+                    ):
+                        call_logs_seed = call_logs_seed[:-1]
+        else:
+            for k in [resume_key, result_key, call_logs_key]:
+                st.session_state.pop(k, None)
+
         _run_ai_batches(
             cluster_name=cluster_name,
             cluster_desc=cluster_desc,
@@ -241,14 +568,19 @@ def _render_ai_section(
             chunk_size=int(chunk_size),
             selected_cluster=selected_cluster,
             debug_terminal_logs=bool(debug_terminal_logs),
+            resume_enabled=bool(resume_enabled),
+            resume_signature=resume_signature,
+            start_batch_idx=int(start_batch_idx),
+            merged_seed=merged_seed,
+            call_logs_seed=call_logs_seed,
         )
 
-    result = st.session_state.get(f"cluster_ai_result:{selected_cluster}", None)
+    result = st.session_state.get(result_key, None)
     if not isinstance(result, dict):
         st.caption("提示：点上面的按钮，AI 才会给结果。")
         return
 
-    call_logs = st.session_state.get(f"cluster_ai_call_logs:{selected_cluster}", None)
+    call_logs = st.session_state.get(call_logs_key, None)
     if isinstance(call_logs, list) and call_logs:
         st.markdown("**本次 AI 调用记录**")
         st.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
