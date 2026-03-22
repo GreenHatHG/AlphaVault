@@ -237,6 +237,57 @@ def _join_assertions_with_posts(assertions: pd.DataFrame, *, posts_filtered: pd.
     return assertions.merge(posts_filtered[join_cols], on="post_uid", how="inner")
 
 
+def _explode_clusters_for_grouping(assertions_joined: pd.DataFrame) -> pd.DataFrame:
+    """
+    When "group by cluster" is enabled, one assertion can belong to multiple clusters.
+
+    We explode list columns:
+    - cluster_keys: list[str]
+    - cluster_displays: list[str]
+    into row-level:
+    - cluster_key: str
+    - cluster_display: str
+    """
+    if assertions_joined.empty:
+        return assertions_joined
+    if "cluster_keys" not in assertions_joined.columns and "cluster_displays" not in assertions_joined.columns:
+        return assertions_joined
+
+    def _pairs_for_row(row: pd.Series) -> list[tuple[str, str]]:
+        keys = row.get("cluster_keys")
+        displays = row.get("cluster_displays")
+        if not isinstance(keys, list):
+            keys = []
+        if not isinstance(displays, list):
+            displays = []
+
+        keys = [str(x).strip() for x in keys if str(x).strip()]
+        displays = [str(x).strip() for x in displays if str(x).strip()]
+
+        if keys:
+            if len(displays) != len(keys):
+                displays = keys
+            return list(zip(keys, displays, strict=False))
+        # Uncategorized: keep exactly 1 row.
+        display = displays[0] if displays else UNCATEGORIZED_LABEL
+        return [("", display)]
+
+    out = assertions_joined.copy()
+    out["__cluster_pair"] = out.apply(_pairs_for_row, axis=1)
+    out = out.explode("__cluster_pair", ignore_index=True)
+    out["cluster_key"] = out["__cluster_pair"].apply(
+        lambda item: str(item[0] or "").strip() if isinstance(item, tuple) and len(item) >= 2 else ""
+    )
+    out["cluster_display"] = out["__cluster_pair"].apply(
+        lambda item: str(item[1] or "").strip() if isinstance(item, tuple) and len(item) >= 2 else ""
+    )
+    out["cluster_display"] = out["cluster_display"].where(
+        out["cluster_display"].str.strip().ne(""), UNCATEGORIZED_LABEL
+    )
+    out = out.drop(columns=["__cluster_pair"])
+    return out
+
+
 def _coalesce_joined_cols(df: pd.DataFrame, *, cols: list[str]) -> pd.DataFrame:
     out = df.copy()
     for col in cols:
@@ -390,13 +441,15 @@ def _filter_assertions_sidebar(
     assertions_all = _ensure_required_columns(assertions, REQUIRED_ASSERT_COLS)
     assertions_joined = _join_assertions_with_posts(assertions_all, posts_filtered=posts_filtered)
     assertions_joined = _coalesce_joined_cols(assertions_joined, cols=ASSERTIONS_COALESCE_COLS)
+    if group_by_cluster:
+        assertions_joined = _explode_clusters_for_grouping(assertions_joined)
     assertions_joined, show_uncategorized = _sidebar_filter_uncategorized(
         assertions_joined,
         group_by_cluster=group_by_cluster,
     )
     assertions_joined = _sidebar_filter_groups(
         assertions_joined,
-        assertions_all=assertions_all,
+        assertions_all=assertions_joined if group_by_cluster else assertions_all,
         group_col=group_col,
         group_label=group_label,
         group_by_cluster=group_by_cluster,

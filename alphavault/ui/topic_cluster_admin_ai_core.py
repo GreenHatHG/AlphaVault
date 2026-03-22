@@ -171,18 +171,7 @@ def _render_ai_section(
         st.info("topic_key 全空，无法筛选。")
         return
 
-    only_unmapped = st.checkbox(
-        "只建议未归类 topic_key",
-        value=True,
-        key="cluster_ai_only_unmapped",
-        help="打开：只从“还没进任何板块”的 topic_key 里选。关闭：可能会把别的板块成员也选进来（写入会移动）。",
-    )
-
     counts_series = topic_counts.value_counts()
-    if only_unmapped and not topic_map.empty:
-        mapped = set(topic_map["topic_key"].dropna().astype(str).str.strip().tolist())
-        if mapped:
-            counts_series = counts_series[~counts_series.index.isin(mapped)]
 
     total_topics = int(len(counts_series))
     st.caption(f"候选 topic_key 数量：{total_topics}（将分批让 AI 处理）")

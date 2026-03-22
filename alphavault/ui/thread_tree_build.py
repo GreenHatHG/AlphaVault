@@ -234,8 +234,18 @@ def _build_assertions_by_post(view_df: pd.DataFrame) -> dict[str, list[dict]]:
     if not assertion_cols:
         return {}
 
+    deduped = view_df.copy()
+    if "post_uid" not in deduped.columns:
+        return {}
+    if "idx" in deduped.columns:
+        # When grouping by cluster, one assertion can appear multiple times (explode).
+        # Dedupe so the tree doesn't repeat the same assertion.
+        deduped = deduped.drop_duplicates(subset=["post_uid", "idx"], keep="first")
+    else:
+        deduped = deduped.drop_duplicates(subset=["post_uid", *assertion_cols], keep="first")
+
     order_cols = [col for col in ["post_uid", "idx", "created_at"] if col in view_df.columns]
-    ordered = view_df.sort_values(by=order_cols, ascending=True)
+    ordered = deduped.sort_values(by=order_cols, ascending=True)
 
     assertions_by_post: dict[str, list[dict]] = {}
     for post_uid, group in ordered.groupby("post_uid"):

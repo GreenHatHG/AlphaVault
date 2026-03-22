@@ -159,6 +159,7 @@ def _render_member_remove(
     *,
     engine: Engine,
     current_topics: list[str],
+    selected_cluster: str,
 ) -> None:
     st.markdown("**移除**")
     to_remove = st.multiselect(
@@ -171,7 +172,7 @@ def _render_member_remove(
         return
     try:
         ensure_cluster_schema(engine)
-        n = delete_cluster_topics(engine, topic_keys=to_remove)
+        n = delete_cluster_topics(engine, cluster_key=selected_cluster, topic_keys=to_remove)
     except Exception as exc:
         st.error(f"移除失败：{type(exc).__name__}: {exc}")
         st.stop()
@@ -271,7 +272,7 @@ def show_topic_cluster_admin(
 
     col_left, col_mid = st.columns([2, 1])
     with col_left:
-        st.caption("v1 规则：一个 topic_key 只能属于一个板块；加入会自动“移动”。")
+        st.caption("v2 规则：一个 topic_key 可以属于多个板块；加入不会自动移走。")
     with col_mid:
         st.metric("当前成员数", f"{len(current_topics)}")
 
@@ -288,7 +289,7 @@ def show_topic_cluster_admin(
             selected_cluster=selected_cluster,
         )
     else:
-        _render_member_remove(engine=engine, current_topics=current_topics)
+        _render_member_remove(engine=engine, current_topics=current_topics, selected_cluster=selected_cluster)
 
     _render_current_member_list(current_topics)
 

@@ -150,16 +150,27 @@ def _select_cluster_key(clusters: pd.DataFrame, assertions_filtered: pd.DataFram
         )
     else:
         # Fallback: from assertions (only non-empty keys).
-        if "cluster_key" not in assertions_filtered.columns:
+        options: list[str] = []
+        if "cluster_key" in assertions_filtered.columns:
+            options = sorted(
+                [
+                    str(x).strip()
+                    for x in assertions_filtered["cluster_key"].dropna().tolist()
+                    if str(x).strip()
+                ]
+            )
+        elif "cluster_keys" in assertions_filtered.columns:
+            raw = assertions_filtered["cluster_keys"].tolist()
+            for item in raw:
+                if not isinstance(item, list):
+                    continue
+                for k in item:
+                    s = str(k).strip()
+                    if s:
+                        options.append(s)
+            options = sorted(list(set(options)))
+        else:
             return ""
-        options = sorted(
-            [
-                str(x).strip()
-                for x in assertions_filtered["cluster_key"].dropna().tolist()
-                if str(x).strip()
-            ]
-        )
-        options = sorted(list(set(options)))
 
     if not options:
         st.info("没有板块数据。先去“主题聚合”建一个板块。")
@@ -414,12 +425,26 @@ def show_follow_pages(
         return
 
     if follow_type == FOLLOW_TYPE_CLUSTER:
-        if "cluster_key" not in assertions_filtered.columns:
-            base_view = assertions_filtered.head(0).copy()
-        else:
+        if "cluster_key" in assertions_filtered.columns:
             base_view = assertions_filtered[
                 assertions_filtered["cluster_key"].astype(str).str.strip() == follow_key
             ]
+        elif "cluster_keys" in assertions_filtered.columns:
+            want = str(follow_key or "").strip()
+            if want:
+                cluster_lists = assertions_filtered["cluster_keys"].tolist()
+                mask = []
+                for item in cluster_lists:
+                    if not isinstance(item, list):
+                        mask.append(False)
+                        continue
+                    keys = [str(x).strip() for x in item if str(x).strip()]
+                    mask.append(want in keys)
+                base_view = assertions_filtered[pd.Series(mask, index=assertions_filtered.index)]
+            else:
+                base_view = assertions_filtered.head(0).copy()
+        else:
+            base_view = assertions_filtered.head(0).copy()
     else:
         if "topic_key" not in assertions_filtered.columns:
             base_view = assertions_filtered.head(0).copy()

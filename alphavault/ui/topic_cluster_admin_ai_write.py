@@ -27,16 +27,19 @@ def _render_ai_write_section(
     name_by_key: Dict[str, str],
 ) -> None:
     st.markdown("**写入板块成员**")
-    st.caption("先选，再写入：新增默认全选；移入默认不选；unsure 默认不选。")
+    st.caption("先选，再写入：新增默认全选；已在别的板块默认不选；unsure 默认不选。")
 
-    # Build a quick topic_key -> cluster_key map for grouping (new vs move-in).
-    topic_to_cluster: dict[str, str] = {}
+    # Build a quick topic_key -> cluster_keys map for grouping (new vs existing).
+    topic_to_clusters: dict[str, list[str]] = {}
     if not topic_map.empty and "topic_key" in topic_map.columns and "cluster_key" in topic_map.columns:
         for _, row in topic_map[["topic_key", "cluster_key"]].dropna().iterrows():
             topic_key = str(row.get("topic_key") or "").strip()
             cluster_key = str(row.get("cluster_key") or "").strip()
             if topic_key and cluster_key:
-                topic_to_cluster[topic_key] = cluster_key
+                topic_to_clusters.setdefault(topic_key, []).append(cluster_key)
+    if topic_to_clusters:
+        for topic_key, keys in list(topic_to_clusters.items()):
+            topic_to_clusters[topic_key] = sorted(set(str(k).strip() for k in keys if str(k).strip()))
 
     include_conf_by_topic: dict[str, float] = {}
     for item in include_items:
@@ -58,7 +61,7 @@ def _render_ai_write_section(
     include_keys = sorted(set(include_keys))
     include_new, include_move, include_from = _split_new_and_move(
         include_keys,
-        topic_to_cluster=topic_to_cluster,
+        topic_to_clusters=topic_to_clusters,
         selected_cluster=selected_cluster,
     )
 
@@ -70,7 +73,7 @@ def _render_ai_write_section(
     unsure_keys = sorted(set(unsure_keys))
     unsure_new, unsure_move, unsure_from = _split_new_and_move(
         unsure_keys,
-        topic_to_cluster=topic_to_cluster,
+        topic_to_clusters=topic_to_clusters,
         selected_cluster=selected_cluster,
     )
 
@@ -79,7 +82,7 @@ def _render_ai_write_section(
     unsure_new = _sort_by_count(unsure_new, count_by_topic=count_by_topic)
     unsure_move = _sort_by_count(unsure_move, count_by_topic=count_by_topic)
 
-    from_cluster_by_topic = {**include_from, **unsure_from}
+    from_clusters_by_topic = {**include_from, **unsure_from}
 
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -92,15 +95,15 @@ def _render_ai_write_section(
             key=f"cluster_ai_write_include_new:{selected_cluster}",
         )
     with col_w2:
-        st.markdown("**include：移入**")
-        st.caption("提示：移入会把 topic_key 从原板块挪到本板块。")
+        st.markdown("**include：已在别的板块**")
+        st.caption("提示：只会“也加入”，不会移走。")
         include_move_selected = st.multiselect(
-            "选择要移入本板块的 topic_key",
+            "选择要加入本板块的 topic_key",
             options=include_move,
             default=[],
             format_func=lambda k: _format_move_topic(
                 str(k),
-                from_cluster_by_topic=from_cluster_by_topic,
+                from_clusters_by_topic=from_clusters_by_topic,
                 name_by_key=name_by_key,
                 count_by_topic=count_by_topic,
             ),
@@ -126,14 +129,14 @@ def _render_ai_write_section(
                 key=f"cluster_ai_write_unsure_new:{selected_cluster}",
             )
         with col_u2:
-            st.markdown("**unsure：移入**")
+            st.markdown("**unsure：已在别的板块**")
             unsure_move_selected = st.multiselect(
-                "选择要移入（unsure）的 topic_key",
+                "选择要加入（unsure）的 topic_key",
                 options=unsure_move,
                 default=[],
                 format_func=lambda k: _format_move_topic(
                     str(k),
-                    from_cluster_by_topic=from_cluster_by_topic,
+                    from_clusters_by_topic=from_clusters_by_topic,
                     name_by_key=name_by_key,
                     count_by_topic=count_by_topic,
                 ),
@@ -175,4 +178,3 @@ def _render_ai_write_section(
     st.success(f"已写入 {n} 个 topic_key。")
     st.cache_data.clear()
     st.rerun()
-
