@@ -85,18 +85,19 @@ def _check_turso() -> None:
     try:
         note = f"pid={os.getpid()} ts={int(time.time())}"
         with turso_connect_autocommit(engine) as conn:
-            with turso_savepoint(conn):
-                conn.execute(
-                    text(
-                        f"""
-                        CREATE TABLE IF NOT EXISTS {HEALTHCHECK_TABLE} (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            created_at INTEGER NOT NULL,
-                            note TEXT NOT NULL
-                        )
-                        """
+            # Keep DDL outside SAVEPOINT for libsql/Turso.
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {HEALTHCHECK_TABLE} (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        created_at INTEGER NOT NULL,
+                        note TEXT NOT NULL
                     )
+                    """
                 )
+            )
+            with turso_savepoint(conn):
                 conn.execute(
                     text(f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"),
                     {"ts": int(time.time()), "note": note},
