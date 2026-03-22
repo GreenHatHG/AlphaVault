@@ -57,24 +57,25 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
         ("ingested_at", "ingested_at INTEGER NOT NULL DEFAULT 0"),
     ]
 
+    # Note: avoid SAVEPOINT around DDL (ALTER TABLE) on libsql, it may lead to
+    # "no such savepoint" errors on RELEASE in some builds.
     with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            cols = table_columns(conn, "posts")
-            for col_name, col_def in extra_columns:
-                if col_name in cols:
-                    continue
-                conn.execute(text(f"ALTER TABLE posts ADD COLUMN {col_def}"))
-                if verbose:
-                    print(f"[turso] schema add_column posts.{col_name}", flush=True)
+        cols = table_columns(conn, "posts")
+        for col_name, col_def in extra_columns:
+            if col_name in cols:
+                continue
+            conn.execute(text(f"ALTER TABLE posts ADD COLUMN {col_def}"))
+            if verbose:
+                print(f"[turso] schema add_column posts.{col_name}", flush=True)
 
-            conn.execute(
-                text(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
-                        ON posts(ai_status, ai_next_retry_at);
-                    """
-                )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
+                    ON posts(ai_status, ai_next_retry_at);
+                """
             )
+        )
 
 
 def cloud_post_is_processed(engine: Engine, post_uid: str) -> bool:
