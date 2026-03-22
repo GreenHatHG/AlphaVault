@@ -56,28 +56,6 @@ def _maybe_init_follow_pages_tables(engine: Engine, load_error: str) -> None:
     st.rerun()
 
 
-def _ai_keywords_for_cluster(cluster_key: str) -> list[str]:
-    key = str(cluster_key or "").strip()
-    if not key:
-        return []
-    ai_result = st.session_state.get(f"cluster_ai_result:{key}", None)
-    if not isinstance(ai_result, dict):
-        return []
-    raw = ai_result.get("keywords")
-    if not isinstance(raw, list):
-        return []
-    words = [str(x).strip() for x in raw if str(x).strip()]
-    # keep unique
-    out: list[str] = []
-    seen: set[str] = set()
-    for w in words:
-        if w in seen:
-            continue
-        seen.add(w)
-        out.append(w)
-    return out
-
-
 def _format_cluster_label(clusters: pd.DataFrame, cluster_key: str) -> str:
     key = str(cluster_key or "").strip()
     if not key:
@@ -226,18 +204,10 @@ def _render_page_create(
 
         page_name = st.text_input("页面名字（可空）", value="")
 
-        default_keywords = ""
-        if follow_type_label == FOLLOW_TYPE_CLUSTER and follow_key:
-            words = _ai_keywords_for_cluster(follow_key)
-            if words:
-                default_keywords = "\n".join(words)
-            else:
-                st.caption("提示：没找到 AI keywords。你可以去“主题聚合”页点 AI，再回来。")
-
         keywords_widget_key = f"follow_pages_create_keywords:{follow_type_label}:{follow_key}"
         keywords_text = st.text_area(
             "关键字（多个，OR；可空）",
-            value=default_keywords,
+            value="",
             height=80,
             key=keywords_widget_key,
         )
@@ -279,10 +249,6 @@ def _render_page_update(
     st.markdown("**页面设置**")
 
     widget_key = f"follow_pages_update_keywords:{page_key}"
-    if follow_type == FOLLOW_TYPE_CLUSTER and not str(keywords_text or "").strip():
-        words = _ai_keywords_for_cluster(follow_key)
-        if words and not str(st.session_state.get(widget_key, "")).strip():
-            st.session_state[widget_key] = "\n".join(words)
 
     with st.form(f"follow_pages_update_form:{page_key}", clear_on_submit=False):
         st.caption(f"page_key：{page_key}")

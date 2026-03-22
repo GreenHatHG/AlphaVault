@@ -17,10 +17,8 @@ from alphavault.constants import DEFAULT_SPOOL_DIR, ENV_SPOOL_DIR
 from alphavault.ui.topic_cluster_admin_ai_write import _render_ai_write_section
 from alphavault.ui.topic_cluster_admin_helpers import (
     _build_candidate_records,
-    _contains_any_word,
     _filter_items_to_candidates,
     _normalize_topic_items,
-    _uniq_str,
 )
 
 MIN_CHUNK_SIZE = 1
@@ -158,7 +156,7 @@ def _run_ai_batches(
         merged: dict = dict(merged_seed)
     else:
         merged = {}
-    for k in ["include_topics", "unsure_topics", "exclude_topics", "keywords", "negative_keywords"]:
+    for k in ["include_topics", "unsure_topics"]:
         if not isinstance(merged.get(k), list):
             merged[k] = []
 
@@ -250,7 +248,6 @@ def _run_ai_batches(
                     "sec": round(cost_sec, 2),
                     "include": 0,
                     "unsure": 0,
-                    "exclude": 0,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
@@ -288,7 +285,6 @@ def _run_ai_batches(
         cost_sec = max(0.0, time.time() - start_ts)
         include_n = len(part.get("include_topics") or []) if isinstance(part.get("include_topics"), list) else 0
         unsure_n = len(part.get("unsure_topics") or []) if isinstance(part.get("unsure_topics"), list) else 0
-        exclude_n = len(part.get("exclude_topics") or []) if isinstance(part.get("exclude_topics"), list) else 0
         call_logs.append(
             {
                 "batch": idx,
@@ -296,7 +292,6 @@ def _run_ai_batches(
                 "sec": round(cost_sec, 2),
                 "include": include_n,
                 "unsure": unsure_n,
-                "exclude": exclude_n,
                 "error": "",
             }
         )
@@ -306,15 +301,11 @@ def _run_ai_batches(
         if debug_terminal_logs:
             print(
                 f"[cluster-ai] batch {idx}/{len(chunks)} topics={len(chunk)} sec={cost_sec:.2f} "
-                f"include={include_n} unsure={unsure_n} exclude={exclude_n}",
+                f"include={include_n} unsure={unsure_n}",
                 flush=True,
             )
 
-        for key in ["include_topics", "unsure_topics", "exclude_topics"]:
-            items = part.get(key)
-            if isinstance(items, list):
-                merged[key].extend(items)
-        for key in ["keywords", "negative_keywords"]:
+        for key in ["include_topics", "unsure_topics"]:
             items = part.get(key)
             if isinstance(items, list):
                 merged[key].extend(items)
@@ -338,9 +329,6 @@ def _run_ai_batches(
                 _try_write_cache_file(cache_path, payload=payload, debug_terminal_logs=debug_terminal_logs)
 
         progress.progress(float(idx) / float(len(chunks)), text=f"AI 处理中... {idx}/{len(chunks)}")
-
-    merged["keywords"] = _uniq_str(merged.get("keywords", []))
-    merged["negative_keywords"] = _uniq_str(merged.get("negative_keywords", []))
 
     st.session_state[result_key] = merged
     st.session_state[call_logs_key] = call_logs
@@ -370,8 +358,6 @@ def _render_ai_section(
     selected_cluster: str,
     cluster_name: str,
     cluster_desc: str,
-    name_by_key: Dict[str, str],
-    apply_keyword_search,
 ) -> None:
     st.markdown("**AI 筛 topic_key（只输入板块）**")
     ok, ai_err = ai_is_configured()
@@ -587,7 +573,6 @@ def _render_ai_section(
 
     include_items = _normalize_topic_items(result.get("include_topics"))
     unsure_items = _normalize_topic_items(result.get("unsure_topics"))
-    exclude_items = _normalize_topic_items(result.get("exclude_topics"))
 
     include_items = _filter_items_to_candidates(
         include_items,
@@ -601,74 +586,9 @@ def _render_ai_section(
         count_by_topic=count_by_topic,
         hint_by_topic=hint_by_topic,
     )
-    exclude_items = _filter_items_to_candidates(
-        exclude_items,
-        candidate_set=candidate_set,
-        count_by_topic=count_by_topic,
-        hint_by_topic=hint_by_topic,
-    )
-
-    keywords = result.get("keywords")
-    words: list[str] = []
-    if isinstance(keywords, list) and keywords:
-        words = [str(x).strip() for x in keywords if str(x).strip()]
-        if words:
-            st.caption("AI keywords: " + ", ".join(words[:30]))
-            st.caption("点一个 keyword：去上面“成员管理→增加”里搜。")
-            words_for_buttons = words[:15]
-            cols_kw2 = st.columns(min(5, len(words_for_buttons)))
-            for idx, word in enumerate(words_for_buttons):
-                col = cols_kw2[idx % len(cols_kw2)]
-                col.button(
-                    str(word),
-                    key=f"cluster_ai_keyword_btn_ai:{selected_cluster}:{idx}",
-                    on_click=apply_keyword_search,
-                    args=(str(word),),
-                )
-
-    negative_keywords = result.get("negative_keywords")
-    negative_words: list[str] = []
-    if isinstance(negative_keywords, list) and negative_keywords:
-        negative_words = [str(x).strip() for x in negative_keywords if str(x).strip()]
-        if negative_words:
-            st.caption("AI negative: " + ", ".join(negative_words[:30]))
-
-    hide_negative = False
-    if negative_words:
-        hide_negative = st.checkbox("隐藏 negative", value=False, key="cluster_ai_hide_negative")
-        if hide_negative:
-            include_items = [
-                item
-                for item in include_items
-                if not (
-                    _contains_any_word(negative_words, item.get("topic_key"))
-                    or _contains_any_word(negative_words, item.get("hint"))
-                )
-            ]
-            unsure_items = [
-                item
-                for item in unsure_items
-                if not (
-                    _contains_any_word(negative_words, item.get("topic_key"))
-                    or _contains_any_word(negative_words, item.get("hint"))
-                )
-            ]
-            exclude_items = [
-                item
-                for item in exclude_items
-                if not (
-                    _contains_any_word(negative_words, item.get("topic_key"))
-                    or _contains_any_word(negative_words, item.get("hint"))
-                )
-            ]
-
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b = st.columns(2)
     col_a.metric("include", f"{len(include_items)}")
     col_b.metric("unsure", f"{len(unsure_items)}")
-    col_c.metric("exclude", f"{len(exclude_items)}")
-
-    show_unsure = st.checkbox("显示 unsure", value=True, key="cluster_ai_show_unsure")
-    show_exclude = st.checkbox("显示 exclude", value=False, key="cluster_ai_show_exclude")
 
     if include_items:
         st.markdown("**include（建议加入）**")
@@ -680,18 +600,10 @@ def _render_ai_section(
     else:
         st.info("include 为空。你可以在“高级”里调大“最多处理 topic_key 数量”，或者换个板块名字更具体。")
 
-    if show_unsure and unsure_items:
+    if unsure_items:
         st.markdown("**unsure（不确定）**")
         st.dataframe(
             pd.DataFrame(unsure_items).sort_values(by=["count"], ascending=False).head(300),
-            width="stretch",
-            hide_index=True,
-        )
-
-    if show_exclude and exclude_items:
-        st.markdown("**exclude（不加入）**")
-        st.dataframe(
-            pd.DataFrame(exclude_items).sort_values(by=["count"], ascending=False).head(300),
             width="stretch",
             hide_index=True,
         )
@@ -703,5 +615,4 @@ def _render_ai_section(
         include_items=include_items,
         unsure_items=unsure_items,
         count_by_topic=count_by_topic,
-        name_by_key=name_by_key,
     )
