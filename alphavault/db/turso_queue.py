@@ -174,7 +174,7 @@ def select_due_post_uids(engine: Engine, *, now_epoch: int, limit: int) -> list[
                             ELSE 1
                         END ASC,
                         COALESCE(ai_next_retry_at, 0) ASC,
-                        ingested_at ASC
+                        ingested_at DESC
                     LIMIT :limit
                     """
                 ),

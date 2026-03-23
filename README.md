@@ -76,13 +76,18 @@ streamlit run streamlit_app.py
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：
-- 简化 cron（推荐）：`RSS_CRON="*/15 6-22 * * *"` 表示 6 点到 22 点，每 15 分钟跑一次
+- Worker（全流程：AI/flush/RSS）
+  - 默认：全天；AI 空了就补单；每 10 分钟做一次维护（不用配）
+  - 可选：`WORKER_CRON="*/10 6-22 * * *"` 表示只在 6-22 点做事
+- RSS（只管抓取，不影响 AI/flush）
+  - 可选：`RSS_CRON="*/15 6-22 * * *"` 表示只在 6-22 点抓 RSS，每 15 分钟尝试一次
 
 ```bash
 docker build -t alphavault .
 
 docker run -d --name alphavault \
 	  -p 8080:8080 \
+	  -e WORKER_CRON="*/10 * * * *" \
 	  -e RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY" \
 	  -e RSS_CRON="*/15 6-22 * * *" \
 	  -e AI_MODEL="openai/gpt-5.2" \

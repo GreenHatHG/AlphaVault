@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 
 from sqlalchemy.engine import Engine
 
@@ -22,6 +24,8 @@ from alphavault.constants import (
     ENV_AI_STREAM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TRACE_OUT,
+    ENV_RSS_ACTIVE_HOURS,
+    ENV_RSS_INTERVAL_SECONDS,
 )
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
@@ -50,17 +54,21 @@ from alphavault.db.turso_queue import (
     write_assertions_and_mark_done,
 )
 from alphavault.rss.utils import (
+    CST,
     RateLimiter,
     build_analysis_context,
     build_row_meta,
     env_bool,
+    env_float,
+    in_active_hours,
     now_str,
+    parse_active_hours,
     sleep_until_active,
 )
 from alphavault.worker.cli import (
-    _parse_active_hours_from_args,
-    _require_rss_urls,
-    _resolve_interval_seconds,
+    _parse_worker_active_hours_from_args,
+    _resolve_rss_urls,
+    _resolve_worker_interval_seconds,
     _resolve_worker_threads,
     parse_args,
 )
@@ -711,23 +719,45 @@ def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> 
         return False
 
 
+def _seconds_until_next_active_start(now_dt: datetime, active_hours: tuple[int, int]) -> float:
+    start_hour, end_hour = active_hours
+    today_start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+
+    if start_hour <= end_hour:
+        if now_dt.hour < start_hour:
+            next_dt = today_start
+        else:
+            next_dt = today_start + timedelta(days=1)
+    else:
+        next_dt = today_start
+
+    return max(1.0, (next_dt - now_dt).total_seconds())
+
+
 def _schedule_ai(
     executor: ThreadPoolExecutor,
     *,
     engine: Optional[Engine],
     worker_threads: int,
+    inflight_futures: set[Future],
+    wakeup_event: threading.Event,
     config: LLMConfig,
     limiter: RateLimiter,
     verbose: bool,
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
+    # Keep inflight bounded: do not queue more than worker_threads tasks.
+    inflight_futures.difference_update({f for f in inflight_futures if f.done()})
+    available = max(0, int(worker_threads) - len(inflight_futures))
+    if available <= 0:
+        return 0, False
     now_epoch = int(time.time())
     try:
         due = select_due_post_uids(
             engine,
             now_epoch=now_epoch,
-            limit=max(1, int(worker_threads) * 2),
+            limit=max(1, int(available) * 2),
         )
     except Exception as e:
         if verbose:
@@ -736,6 +766,8 @@ def _schedule_ai(
 
     scheduled = 0
     for post_uid in due:
+        if scheduled >= available:
+            break
         try:
             ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
         except Exception as e:
@@ -744,32 +776,30 @@ def _schedule_ai(
             return scheduled, True
         if not ok:
             continue
-        executor.submit(
+        fut = executor.submit(
             _process_one_post_uid,
             engine=engine,
             post_uid=post_uid,
             config=config,
             limiter=limiter,
         )
+        fut.add_done_callback(lambda _f: wakeup_event.set())
+        inflight_futures.add(fut)
         scheduled += 1
     return scheduled, False
 
 
-def _run_turso_tick(
-    executor: ThreadPoolExecutor,
+def _run_turso_maintenance(
     *,
     engine: Optional[Engine],
     spool_dir: Path,
     redis_client,
     redis_queue_key: str,
-    worker_threads: int,
-    config: LLMConfig,
-    limiter: RateLimiter,
     stuck_seconds: int,
     verbose: bool,
-) -> Tuple[int, int, int, int, bool]:
+) -> Tuple[int, int, int, bool]:
     if engine is None:
-        return 0, 0, 0, 0, False
+        return 0, 0, 0, False
 
     turso_error = False
     recovered = 0
@@ -800,89 +830,15 @@ def _run_turso_tick(
         max_items=200,
         verbose=bool(verbose),
     )
-    scheduled, schedule_error = _schedule_ai(
-        executor,
-        engine=engine,
-        worker_threads=worker_threads,
-        config=config,
-        limiter=limiter,
-        verbose=bool(verbose),
-    )
-    turso_error = bool(turso_error or flush_redis_error or flush_spool_error or schedule_error)
-    return recovered, flushed_redis, flushed_spool, scheduled, turso_error
-
-
-def _run_loop_once(
-    executor: ThreadPoolExecutor,
-    *,
-    args: argparse.Namespace,
-    engine: Engine,
-    rss_urls: list[str],
-    spool_dir: Path,
-    redis_client,
-    redis_queue_key: str,
-    limit: Optional[int],
-    worker_threads: int,
-    config: LLMConfig,
-    limiter: RateLimiter,
-    active_hours: Optional[tuple[int, int]],
-    turso_ready: bool,
-) -> Tuple[bool, bool, int, int, int, int, int]:
-    verbose = bool(args.verbose)
-    if active_hours is not None:
-        sleep_until_active(active_hours, verbose=verbose)
-
-    active_engine_used = False
-    if not turso_ready:
-        turso_ready = _ensure_turso_ready(engine=engine, verbose=verbose, turso_ready=turso_ready)
-    active_engine: Optional[Engine] = engine if turso_ready else None
-    active_engine_used = active_engine is not None
-
-    inserted, ingest_turso_error = ingest_rss_many_once(
-        rss_urls=rss_urls,
-        engine=active_engine,
-        spool_dir=spool_dir,
-        redis_client=redis_client,
-        redis_queue_key=redis_queue_key,
-        author=args.author.strip(),
-        user_id=(args.user_id.strip() or None),
-        limit=limit,
-        rss_timeout=float(args.rss_timeout),
-        verbose=verbose,
-    )
-
-    recovered = 0
-    flushed_redis = 0
-    flushed_spool = 0
-    scheduled = 0
-    turso_error = bool(ingest_turso_error)
-
-    if active_engine is not None:
-        recovered, flushed_redis, flushed_spool, scheduled, tick_error = _run_turso_tick(
-            executor,
-            engine=active_engine,
-            spool_dir=spool_dir,
-            redis_client=redis_client,
-            redis_queue_key=redis_queue_key,
-            worker_threads=worker_threads,
-            config=config,
-            limiter=limiter,
-            stuck_seconds=int(args.ai_stuck_seconds),
-            verbose=verbose,
-        )
-        turso_error = bool(turso_error or tick_error)
-
-    if turso_error:
-        turso_ready = False
-
-    return turso_ready, active_engine_used, inserted, flushed_redis, flushed_spool, recovered, scheduled
+    turso_error = bool(turso_error or flush_redis_error or flush_spool_error)
+    return recovered, flushed_redis, flushed_spool, turso_error
 
 
 def main() -> None:
     args = parse_args()
-    rss_urls = _require_rss_urls(args)
-    active_hours = _parse_active_hours_from_args(args)
-    interval = _resolve_interval_seconds(args)
+    rss_urls = _resolve_rss_urls(args)
+    worker_active_hours = _parse_worker_active_hours_from_args(args)
+    worker_interval = _resolve_worker_interval_seconds(args)
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
     worker_threads = _resolve_worker_threads(args)
@@ -897,34 +853,128 @@ def main() -> None:
     )
     limit = args.limit if args.limit and args.limit > 0 else None
 
+    rss_active_hours: Optional[tuple[int, int]] = None
+    rss_active_hours_value = os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
+    if rss_active_hours_value:
+        rss_active_hours = parse_active_hours(rss_active_hours_value)
+
+    rss_interval_seconds = env_float(ENV_RSS_INTERVAL_SECONDS)
+    if rss_interval_seconds is None or rss_interval_seconds <= 0:
+        rss_interval_seconds = 600.0
+    rss_interval_seconds = max(1.0, float(rss_interval_seconds))
+    rss_next_ingest_at = 0.0 if rss_urls else float("inf")
+    maintenance_next_at = 0.0
+
     with ThreadPoolExecutor(max_workers=worker_threads) as executor:
+        wakeup_event = threading.Event()
+        inflight_futures: set[Future] = set()
         turso_ready = False
-        loop_idx = 0
         while True:
-            loop_idx += 1
-            turso_ready, active_engine_used, inserted, flushed_redis, flushed_spool, recovered, scheduled = _run_loop_once(
-                executor,
-                args=args,
-                engine=engine,
-                rss_urls=rss_urls,
-                spool_dir=spool_dir,
-                redis_client=redis_client,
-                redis_queue_key=redis_queue_key,
-                limit=limit,
-                worker_threads=worker_threads,
-                config=config,
-                limiter=limiter,
-                active_hours=active_hours,
-                turso_ready=turso_ready,
-            )
-            if args.verbose:
+            verbose = bool(args.verbose)
+            if worker_active_hours is not None:
+                sleep_until_active(worker_active_hours, verbose=verbose)
+
+            wakeup_event.clear()
+            inflight_futures.difference_update({f for f in inflight_futures if f.done()})
+
+            now = time.time()
+            do_maintenance = bool(now >= maintenance_next_at)
+            if do_maintenance:
+                maintenance_next_at = now + float(worker_interval)
+
+            do_ingest_rss = False
+            rss_skip_reason = ""
+            if not rss_urls:
+                rss_skip_reason = "no_sources"
+            else:
+                now_dt = datetime.now(CST)
+                if rss_active_hours is not None and not in_active_hours(now_dt, rss_active_hours):
+                    rss_skip_reason = "inactive"
+                    rss_next_ingest_at = now + _seconds_until_next_active_start(now_dt, rss_active_hours)
+                elif now < rss_next_ingest_at:
+                    rss_skip_reason = "interval"
+                else:
+                    do_ingest_rss = True
+                    rss_next_ingest_at = now + float(rss_interval_seconds)
+
+            if not turso_ready and (do_maintenance or do_ingest_rss):
+                turso_ready = _ensure_turso_ready(engine=engine, verbose=verbose, turso_ready=turso_ready)
+            active_engine: Optional[Engine] = engine if turso_ready else None
+
+            inserted = 0
+            ingest_turso_error = False
+            if do_ingest_rss and rss_urls:
+                inserted, ingest_turso_error = ingest_rss_many_once(
+                    rss_urls=rss_urls,
+                    engine=active_engine,
+                    spool_dir=spool_dir,
+                    redis_client=redis_client,
+                    redis_queue_key=redis_queue_key,
+                    author=args.author.strip(),
+                    user_id=(args.user_id.strip() or None),
+                    limit=limit,
+                    rss_timeout=float(args.rss_timeout),
+                    verbose=verbose,
+                )
+
+            recovered = 0
+            flushed_redis = 0
+            flushed_spool = 0
+            maintenance_error = False
+            if do_maintenance and active_engine is not None:
+                recovered, flushed_redis, flushed_spool, maintenance_error = _run_turso_maintenance(
+                    engine=active_engine,
+                    spool_dir=spool_dir,
+                    redis_client=redis_client,
+                    redis_queue_key=redis_queue_key,
+                    stuck_seconds=int(args.ai_stuck_seconds),
+                    verbose=verbose,
+                )
+
+            scheduled = 0
+            schedule_error = False
+            if active_engine is not None:
+                scheduled, schedule_error = _schedule_ai(
+                    executor,
+                    engine=active_engine,
+                    worker_threads=worker_threads,
+                    inflight_futures=inflight_futures,
+                    wakeup_event=wakeup_event,
+                    config=config,
+                    limiter=limiter,
+                    verbose=verbose,
+                )
+
+            turso_error = bool(ingest_turso_error or maintenance_error or schedule_error)
+            if turso_error:
+                turso_ready = False
+
+            if verbose and (
+                do_maintenance
+                or inserted > 0
+                or recovered > 0
+                or flushed_redis > 0
+                or flushed_spool > 0
+            ):
+                next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+                next_rss_in = -1.0 if rss_next_ingest_at == float("inf") else max(0.0, rss_next_ingest_at - time.time())
                 print(
-                    f"[loop] idx={loop_idx} turso_ready={int(active_engine_used)} "
-                    f"rss_inserted={inserted} redis_flush={flushed_redis} spool_flush={flushed_spool} "
-                    f"ai_recovered={recovered} ai_scheduled={scheduled}",
+                    f"[tick] turso_ready={1 if active_engine is not None else 0} "
+                    f"inflight={len(inflight_futures)} ai_scheduled={scheduled} "
+                    f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
+                    f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
+                    f"next_maint={int(next_maintenance_in)}s next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s",
                     flush=True,
                 )
-            time.sleep(interval)
+
+            next_deadline = maintenance_next_at
+            if rss_next_ingest_at != float("inf"):
+                next_deadline = min(next_deadline, rss_next_ingest_at)
+            timeout = max(0.0, next_deadline - time.time())
+            if inflight_futures:
+                wakeup_event.wait(timeout)
+            else:
+                time.sleep(timeout)
 
 
 __all__ = ["main", "parse_args", "LLMConfig"]

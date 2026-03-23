@@ -26,10 +26,8 @@ from alphavault.constants import (
     ENV_AI_RPM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
-    ENV_RSS_ACTIVE_HOURS,
-    ENV_RSS_INTERVAL_SECONDS,
-    ENV_RSS_URL,
-    ENV_RSS_URLS,
+    ENV_WORKER_ACTIVE_HOURS,
+    ENV_WORKER_INTERVAL_SECONDS,
 )
 from alphavault.rss.utils import env_float, env_int, parse_active_hours, parse_rss_urls
 
@@ -45,12 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）")
     parser.add_argument("--author", default="", help="作者名（为空则从 RSS 里取）")
     parser.add_argument("--user-id", default="", help="微博用户ID（可为空，自动推断）")
-    parser.add_argument("--active-hours", default="", help="只在这些小时运行（CST），格式: 6-22；为空=全天")
+    parser.add_argument("--active-hours", default="", help="worker 只在这些小时做事（CST），格式: 6-22；为空=全天")
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少条（0 表示不限）")
     parser.add_argument("--rss-timeout", type=float, default=15.0, help="RSS HTTP 超时秒数")
-    parser.add_argument("--interval-seconds", type=float, default=0.0, help="轮询间隔（0=读 RSS_INTERVAL_SECONDS 或默认 600）")
+    parser.add_argument("--interval-seconds", type=float, default=0.0, help="worker 维护间隔秒数（0=读 WORKER_INTERVAL_SECONDS 或默认 600）")
     parser.add_argument("--worker-threads", type=int, default=0, help="后台 AI 线程数（0=自动）")
-    parser.add_argument("--ai-stuck-seconds", type=int, default=600, help="running 超过多久算卡死（秒）")
+    parser.add_argument("--ai-stuck-seconds", type=int, default=3600, help="running 超过多久算卡死（秒）")
 
     # AI config (litellm only; mostly via env)
     parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
@@ -103,32 +101,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _require_rss_urls(args: argparse.Namespace) -> list[str]:
+def _resolve_rss_urls(args: argparse.Namespace) -> list[str]:
     rss_urls = parse_rss_urls(args)
-    if not rss_urls:
-        raise RuntimeError(
-            f"Missing RSS url(s). Set {ENV_RSS_URLS}/{ENV_RSS_URL} or pass --rss-url/--rss-urls."
-        )
     if args.verbose:
         print(f"[rss] sources={len(rss_urls)}", flush=True)
     return rss_urls
 
 
-def _parse_active_hours_from_args(args: argparse.Namespace) -> Optional[tuple[int, int]]:
+def _parse_worker_active_hours_from_args(args: argparse.Namespace) -> Optional[tuple[int, int]]:
     active_hours_value = (
         args.active_hours.strip()
         if args.active_hours
-        else os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
+        else os.getenv(ENV_WORKER_ACTIVE_HOURS, "").strip()
     )
     if not active_hours_value:
         return None
     return parse_active_hours(active_hours_value)
 
 
-def _resolve_interval_seconds(args: argparse.Namespace) -> float:
+def _resolve_worker_interval_seconds(args: argparse.Namespace) -> float:
     interval = float(args.interval_seconds or 0.0)
     if interval <= 0:
-        interval = float(os.getenv(ENV_RSS_INTERVAL_SECONDS, "600") or "600")
+        interval = float(os.getenv(ENV_WORKER_INTERVAL_SECONDS, "600") or "600")
     return max(1.0, interval)
 
 
@@ -142,4 +136,3 @@ def _resolve_worker_threads(args: argparse.Namespace) -> int:
     if args.ai_max_inflight and args.ai_max_inflight > 0:
         worker_threads = min(worker_threads, int(args.ai_max_inflight))
     return max(1, int(worker_threads))
-

@@ -83,9 +83,22 @@ parse_simple_cron() {
   )
 }
 
-# Defaults (do not expose to users; use RSS_CRON)
+# Defaults
+# - Worker: controls the whole loop (AI/flush/RSS).
+# - RSS: only controls RSS ingest.
+WORKER_INTERVAL_SECONDS="600"
+WORKER_ACTIVE_HOURS=""
+
 RSS_INTERVAL_SECONDS="600"
 RSS_ACTIVE_HOURS=""
+
+# Worker cron shortcut (simple pattern)
+# Example: WORKER_CRON="*/10 * * * *" (every 10 minutes, all day)
+if [ -n "${WORKER_CRON:-}" ]; then
+  out="$(parse_simple_cron "WORKER_CRON" "$WORKER_CRON")"
+  WORKER_INTERVAL_SECONDS="${out%%|*}"
+  WORKER_ACTIVE_HOURS="${out#*|}"
+fi
 
 # Cron shortcut (simple pattern)
 # Example: RSS_CRON="*/15 6-22 * * *"
@@ -95,8 +108,10 @@ if [ -n "${RSS_CRON:-}" ]; then
   RSS_ACTIVE_HOURS="${out#*|}"
 fi
 
+export WORKER_INTERVAL_SECONDS WORKER_ACTIVE_HOURS
 export RSS_INTERVAL_SECONDS RSS_ACTIVE_HOURS
 
+echo "[entrypoint] worker_interval=${WORKER_INTERVAL_SECONDS}s worker_active=${WORKER_ACTIVE_HOURS:-all}"
 echo "[entrypoint] rss_interval=${RSS_INTERVAL_SECONDS}s rss_active=${RSS_ACTIVE_HOURS:-all}"
 echo "[entrypoint] starting supervisord..."
 exec supervisord -c /app/supervisord.conf
