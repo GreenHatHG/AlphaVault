@@ -18,7 +18,7 @@ TOPIC_CLUSTER_POST_OVERRIDES_TABLE = "topic_cluster_post_overrides"
 TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
 TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_ignore_readonly_isolation_level"
+_SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_turso_dialect_patched"
 
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
 
@@ -29,12 +29,47 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
 
     Why:
     - Avoid DBAPI commit()/rollback(), which may panic in some libsql builds.
+    - SQLAlchemy may call rollback() on close for cleanup; avoid that path too.
     - Some libsql DBAPI connections expose a read-only `isolation_level`, which breaks
       SQLAlchemy's default SQLite isolation_level setter.
     """
     dialect = getattr(engine, "dialect", None)
     if dialect is not None and not getattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False):
+        original_do_rollback = getattr(dialect, "do_rollback", None)
         original_set_isolation_level = getattr(dialect, "set_isolation_level", None)
+
+        if callable(original_do_rollback):
+
+            def _patched_do_rollback(dbapi_connection):  # type: ignore[no-untyped-def]
+                # NOTE: SQLAlchemy may issue a rollback() on connection close even if the
+                # application never started a transaction (cleanup behavior).
+                #
+                # Some libsql builds may panic on DBAPI rollback(), so we avoid calling it.
+                try:
+                    cursor = dbapi_connection.cursor()
+                except Exception:
+                    cursor = None
+
+                if cursor is not None:
+                    try:
+                        cursor.execute("ROLLBACK")
+                    except Exception:
+                        # Cleanup rollback must never crash the worker.
+                        pass
+                    finally:
+                        try:
+                            cursor.close()
+                        except Exception:
+                            pass
+                    return None
+
+                execute = getattr(dbapi_connection, "execute", None)
+                if callable(execute):
+                    try:
+                        execute("ROLLBACK")
+                    except Exception:
+                        pass
+                return None
 
         if callable(original_set_isolation_level):
 
@@ -50,7 +85,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
                     raise
 
             dialect.set_isolation_level = _patched_set_isolation_level  # type: ignore[assignment]
-            setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
+        if callable(original_do_rollback):
+            dialect.do_rollback = _patched_do_rollback  # type: ignore[assignment]
+        setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
 
     return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
 
