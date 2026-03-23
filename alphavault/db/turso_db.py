@@ -19,6 +19,7 @@ TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
 TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_turso_dialect_patched"
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
 
@@ -40,6 +41,48 @@ def is_turso_stream_not_found_error(err: BaseException) -> bool:
         except Exception:
             msg = ""
         if needle in msg.lower():
+            return True
+        # SQLAlchemy often wraps the original exception in `.orig`.
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException) and orig is not current:
+            current = orig
+            continue
+        current = (
+            current.__cause__
+            if isinstance(current.__cause__, BaseException)
+            else current.__context__
+        )
+        if not isinstance(current, BaseException):
+            current = None
+    return False
+
+
+def is_turso_libsql_panic_error(err: BaseException) -> bool:
+    """
+    Detect libsql/pyo3 panic surfaced as a Python BaseException.
+
+    This is NOT a normal Exception and may bypass `except Exception`.
+    Typical message: "called `Option::unwrap()` on a `None` value".
+    """
+    current: BaseException | None = err
+    for _ in range(10):
+        if current is None:
+            break
+        t = type(current)
+        if getattr(t, "__name__", "") == "PanicException":
+            mod = str(getattr(t, "__module__", "") or "")
+            if "pyo3" in mod or "pyo3_runtime" in mod:
+                return True
+        try:
+            msg = str(current)
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            msg = ""
+        msg_lower = msg.lower()
+        if "option::unwrap" in msg_lower:
+            return True
+        if "panicexception" in msg_lower and "pyo3" in msg_lower:
             return True
         # SQLAlchemy often wraps the original exception in `.orig`.
         orig = getattr(current, "orig", None)
@@ -82,19 +125,25 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
                 # Some libsql builds may panic on DBAPI rollback(), so we avoid calling it.
                 try:
                     cursor = dbapi_connection.cursor()
-                except Exception:
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
                     cursor = None
 
                 if cursor is not None:
                     try:
                         cursor.execute("ROLLBACK")
-                    except Exception:
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
                         # Cleanup rollback must never crash the worker.
                         pass
                     finally:
                         try:
                             cursor.close()
-                        except Exception:
+                        except BaseException as e:
+                            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                                raise
                             pass
                     return None
 
@@ -102,7 +151,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
                 if callable(execute):
                     try:
                         execute("ROLLBACK")
-                    except Exception:
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
                         pass
                 return None
 

@@ -17,3 +17,11 @@
 - 注意：就算你没手动 `rollback()`，`SQLAlchemy` 在 `conn.close()`（比如 `with conn:` 结束）也可能自动触发一次 `rollback` 做清理；`turso_connect_autocommit(engine)` 已在内部 patch 这条路径，避免触发 `libsql` 的 `panic`。
 - 多条 SQL 需要“一起成功”的场景：用 `turso_savepoint(conn)` 包住（当前 libsql/Turso 下底层走 SQL `BEGIN/COMMIT/ROLLBACK`，不走 DBAPI `commit()`）。
 - 自检：改 DB 写入代码后跑一次 `rg -n "engine\\.begin\\("`，尽量结果为 0（特别是 Turso 写入路径）。
+
+## Turso / libsql panic（重要）
+
+- `libsql_experimental` 可能会触发 Rust `panic`，在 Python 里会变成 `pyo3_runtime.PanicException`。
+- 这个东西有时是 `BaseException`（不是 `Exception`），所以只写 `except Exception:` 可能接不住，worker 会直接退出。
+- 推荐做法：
+  - Turso 相关边界用 `except BaseException as e:`，但要放过 `KeyboardInterrupt` / `SystemExit`（别吞掉“我要停服务”）。
+  - 看到 `stream not found` / `Option::unwrap()` 这类错误时，优先 `engine.dispose()` 让连接池重建。

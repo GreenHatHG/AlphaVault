@@ -37,6 +37,7 @@ from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
 from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
 from alphavault.db.turso_db import (
     get_turso_engine_from_env,
+    is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
 )
 from alphavault.db.turso_queue import (
@@ -81,6 +82,7 @@ from alphavault.weibo.topic_prompt_tree import (
 )
 
 TURSO_READY_RETRY_SECONDS = 5.0
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 @dataclass
@@ -837,15 +839,20 @@ def _log_spool_and_redis(
         print(f"[redis] enabled key={redis_queue_key}", flush=True)
 
 
-def _maybe_dispose_turso_engine_on_stream_not_found(
+def _maybe_dispose_turso_engine_on_transient_error(
     *, engine: Engine, err: BaseException, verbose: bool
 ) -> None:
-    if not is_turso_stream_not_found_error(err):
+    reason = ""
+    if is_turso_stream_not_found_error(err):
+        reason = "stream_not_found"
+    elif is_turso_libsql_panic_error(err):
+        reason = "libsql_panic"
+    else:
         return
     try:
         engine.dispose()
         if verbose:
-            print("[turso] disposed_engine reason=stream_not_found", flush=True)
+            print(f"[turso] disposed_engine reason={reason}", flush=True)
     except Exception as dispose_e:
         if verbose:
             print(
@@ -861,8 +868,10 @@ def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> 
         ensure_cloud_queue_schema(engine, verbose=bool(verbose))
         print("[turso] ready", flush=True)
         return True
-    except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
             engine=engine, err=e, verbose=bool(verbose)
         )
         if verbose:
@@ -912,8 +921,10 @@ def _schedule_ai(
             now_epoch=now_epoch,
             limit=max(1, int(available) * 2),
         )
-    except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
             engine=engine, err=e, verbose=bool(verbose)
         )
         if verbose:
@@ -926,8 +937,10 @@ def _schedule_ai(
             break
         try:
             ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
-        except Exception as e:
-            _maybe_dispose_turso_engine_on_stream_not_found(
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            _maybe_dispose_turso_engine_on_transient_error(
                 engine=engine, err=e, verbose=bool(verbose)
             )
             if verbose:
@@ -970,28 +983,56 @@ def _run_turso_maintenance(
             verbose=bool(verbose),
         )
         recovered += recover_done_without_processed_at(engine, verbose=bool(verbose))
-    except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
             engine=engine, err=e, verbose=bool(verbose)
         )
         turso_error = True
         if verbose:
             print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
 
-    flushed_redis, flush_redis_error = flush_redis_to_turso(
-        client=redis_client,
-        queue_key=redis_queue_key,
-        spool_dir=spool_dir,
-        engine=engine,
-        max_items=200,
-        verbose=bool(verbose),
-    )
-    flushed_spool, flush_spool_error = flush_spool_to_turso(
-        spool_dir=spool_dir,
-        engine=engine,
-        max_items=200,
-        verbose=bool(verbose),
-    )
+    flushed_redis = 0
+    flush_redis_error = False
+    try:
+        flushed_redis, flush_redis_error = flush_redis_to_turso(
+            client=redis_client,
+            queue_key=redis_queue_key,
+            spool_dir=spool_dir,
+            engine=engine,
+            max_items=200,
+            verbose=bool(verbose),
+        )
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
+        flush_redis_error = True
+        if verbose:
+            print(f"[redis] flush_error {type(e).__name__}: {e}", flush=True)
+
+    flushed_spool = 0
+    flush_spool_error = False
+    try:
+        flushed_spool, flush_spool_error = flush_spool_to_turso(
+            spool_dir=spool_dir,
+            engine=engine,
+            max_items=200,
+            verbose=bool(verbose),
+        )
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
+        flush_spool_error = True
+        if verbose:
+            print(f"[spool] flush_error {type(e).__name__}: {e}", flush=True)
+
     turso_error = bool(turso_error or flush_redis_error or flush_spool_error)
     return recovered, flushed_redis, flushed_spool, turso_error
 
@@ -1082,18 +1123,29 @@ def main() -> None:
             inserted = 0
             ingest_turso_error = False
             if do_ingest_rss and rss_urls:
-                inserted, ingest_turso_error = ingest_rss_many_once(
-                    rss_urls=rss_urls,
-                    engine=active_engine,
-                    spool_dir=spool_dir,
-                    redis_client=redis_client,
-                    redis_queue_key=redis_queue_key,
-                    author=args.author.strip(),
-                    user_id=(args.user_id.strip() or None),
-                    limit=limit,
-                    rss_timeout=float(args.rss_timeout),
-                    verbose=verbose,
-                )
+                try:
+                    inserted, ingest_turso_error = ingest_rss_many_once(
+                        rss_urls=rss_urls,
+                        engine=active_engine,
+                        spool_dir=spool_dir,
+                        redis_client=redis_client,
+                        redis_queue_key=redis_queue_key,
+                        author=args.author.strip(),
+                        user_id=(args.user_id.strip() or None),
+                        limit=limit,
+                        rss_timeout=float(args.rss_timeout),
+                        verbose=verbose,
+                    )
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    _maybe_dispose_turso_engine_on_transient_error(
+                        engine=engine, err=e, verbose=bool(verbose)
+                    )
+                    ingest_turso_error = True
+                    inserted = 0
+                    if verbose:
+                        print(f"[rss] ingest_error {type(e).__name__}: {e}", flush=True)
 
             recovered = 0
             flushed_redis = 0
