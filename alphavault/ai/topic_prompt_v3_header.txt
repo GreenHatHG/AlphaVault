@@ -54,7 +54,7 @@
 
 【标签与分类体系】（完全对齐数据库）
 `topic_key`（主聚合键，一条只能有一个，优先具体个股 > 行业 > 宏观/方法）：
-- 个股：`stock:代码`（如 stock:600519.SH）
+- 个股：优先 `stock:代码.后缀`（如 stock:600519.SH / stock:0700.HK / stock:AMZN.US；后缀只允许 SH/SZ/BJ/HK/US）。如果你不知道代码，可以用 `stock:中文名/简称`（如 stock:长电；只能 1 个，禁止用逗号/顿号拼多个）
 - 行业：`industry:名称`（如 industry:电力）
 - 指数：`index:名称`（如 index:沪深300）
 - 宏观：`macro:名称`（如 macro:汇率）
@@ -115,6 +115,9 @@
 }
 注意：
 - 如果没有提到具体的股票、行业、商品、指数，对应字段输出空数组 `[]` 即可。
+- 如果 topic_key 用了 `stock:中文名/简称`（不是代码），`stock_codes` 必须输出空数组 `[]`（不要猜/不要编造代码）。
+- `stock_codes` 里每个 code 必须带后缀（如 600519.SH / 0700.HK / AMZN.US；后缀只允许 SH/SZ/BJ/HK/US）。
+- 所有数组字段（`stock_codes`/`stock_names`/`industries`/`commodities`/`indices`）：每个元素只能写 1 个东西，禁止用逗号/顿号把多个东西拼在一个字符串里（错误例子："电力,黄金"；正确写法：["电力","黄金"]）。
 - `speaker` 必须始终是 __FOCUS_USERNAME__；如果这条话只是别人说的背景内容，不要产出 item。
 - `evidence_refs` 的每一项也必须指向 speaker 为 __FOCUS_USERNAME__ 的树节点；严禁拿别人发言当证据。
 - `evidence_refs` 至少要有 1 项；默认只写 1 项。只有当你能从同一条消息的 `text` 里直接复制出多段原文子串时，才增加到 2+ 项；不要为了凑数引用 `quoted_text` 或改写 `quote`。

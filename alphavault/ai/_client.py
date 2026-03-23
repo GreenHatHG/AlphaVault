@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from alphavault.ai._errors import _append_trace, _mask_secret, extract_llm_error_details
 from alphavault.ai._extract import _collect_streamed_ai_text, _extract_ai_text
@@ -26,6 +26,27 @@ class AiInvalidJsonError(RuntimeError):
         self.raw_ai_text = str(raw_ai_text or "")
 
 
+class AiValidationError(RuntimeError):
+    """
+    Raised when parsed JSON does not pass a caller-provided validator.
+
+    Keep raw_ai_text for downstream logging (but callers should print only a short tail).
+    """
+
+    def __init__(self, message: str, *, raw_ai_text: str) -> None:
+        super().__init__(message)
+        self.raw_ai_text = str(raw_ai_text or "")
+
+
+def _to_one_line_tail(text: str, *, max_chars: int) -> str:
+    s = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    if not s:
+        return ""
+    if len(s) <= int(max_chars):
+        return s
+    return s[-int(max_chars) :]
+
+
 def _call_ai_with_litellm(
     *,
     prompt: str,
@@ -40,6 +61,7 @@ def _call_ai_with_litellm(
     reasoning_effort: str,
     trace_out: Optional[Path],
     trace_label: str,
+    validator: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     litellm = _import_litellm()
 
@@ -98,6 +120,15 @@ def _call_ai_with_litellm(
                     f"ai_invalid_json:{type(parse_exc).__name__}",
                     raw_ai_text=raw_text,
                 ) from parse_exc
+
+            if validator is not None:
+                try:
+                    validator(parsed)
+                except Exception as val_exc:
+                    raise AiValidationError(
+                        f"ai_invalid_output:{type(val_exc).__name__}:{val_exc}",
+                        raw_ai_text=raw_text,
+                    ) from val_exc
             _append_trace(
                 trace_out,
                 {
@@ -119,6 +150,21 @@ def _call_ai_with_litellm(
             return parsed
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, AiValidationError):
+                tail = _to_one_line_tail(getattr(exc, "raw_ai_text", ""), max_chars=240)
+                msg = str(exc)[:400]
+                print(
+                    " ".join(
+                        [
+                            "[llm] validate_failed",
+                            f"label={trace_label}",
+                            f"attempt={attempt + 1}",
+                            f"error={msg}",
+                            f"raw_ai_tail={tail}",
+                        ]
+                    ),
+                    flush=True,
+                )
             _append_trace(
                 trace_out,
                 {

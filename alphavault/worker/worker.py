@@ -36,6 +36,7 @@ from alphavault.ai.analyze import (
     validate_and_adjust_assertions,
 )
 from alphavault.ai._client import AiInvalidJsonError
+from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
 from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
 from alphavault.db.turso_db import get_turso_engine_from_env
 from alphavault.db.turso_queue import (
@@ -494,6 +495,7 @@ def _process_one_post_uid_topic_prompt_v3(
             reasoning_effort=str(config.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT),
             trace_out=config.trace_out,
             trace_label=trace_label,
+            validator=validate_topic_prompt_v3_ai_result,
         )
 
         if config.verbose:
