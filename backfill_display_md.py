@@ -186,13 +186,13 @@ def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry
     updated = 0
     found_uids: set[str] = set()
 
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
 
     print(f"[backfill] start total_posts={total_posts} target={len(post_uids)} overwrite=True by_post_uids=True")
 
     for chunk in _chunks(post_uids, batch_size):
-        with engine.connect() as conn:
+        with turso_connect_autocommit(engine) as conn:
             rows = _select_rows_by_post_uids(conn, chunk)
 
         updates, found_this_batch = _build_updates(rows)
@@ -226,7 +226,7 @@ def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, ove
     updated = 0
     last_post_uid = ""
 
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
         target_total = _count_targets(conn, overwrite=bool(overwrite))
         stop_post_uid = _max_target_post_uid(conn, overwrite=bool(overwrite))
@@ -244,7 +244,7 @@ def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, ove
             if remaining <= 0:
                 break
 
-        with engine.connect() as conn:
+        with turso_connect_autocommit(engine) as conn:
             effective_batch_size = int(batch_size)
             if remaining is not None:
                 effective_batch_size = min(effective_batch_size, remaining)

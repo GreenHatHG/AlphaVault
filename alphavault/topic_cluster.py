@@ -38,18 +38,19 @@ def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame,
     Returns: (clusters, topic_map, post_overrides, error_message)
     """
     try:
-        clusters = pd.read_sql_query(
-            f"SELECT cluster_key, cluster_name, description, created_at, updated_at FROM {TOPIC_CLUSTERS_TABLE}",
-            engine,
-        )
-        topic_map = pd.read_sql_query(
-            f"SELECT topic_key, cluster_key, source, confidence, created_at FROM {TOPIC_CLUSTER_TOPICS_TABLE}",
-            engine,
-        )
-        post_overrides = pd.read_sql_query(
-            f"SELECT post_uid, cluster_key, reason, confidence, created_at FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}",
-            engine,
-        )
+        with turso_connect_autocommit(engine) as conn:
+            clusters = pd.read_sql_query(
+                f"SELECT cluster_key, cluster_name, description, created_at, updated_at FROM {TOPIC_CLUSTERS_TABLE}",
+                conn,
+            )
+            topic_map = pd.read_sql_query(
+                f"SELECT topic_key, cluster_key, source, confidence, created_at FROM {TOPIC_CLUSTER_TOPICS_TABLE}",
+                conn,
+            )
+            post_overrides = pd.read_sql_query(
+                f"SELECT post_uid, cluster_key, reason, confidence, created_at FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}",
+                conn,
+            )
         return clusters, topic_map, post_overrides, ""
     except Exception as exc:
         empty = pd.DataFrame()

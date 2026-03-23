@@ -83,13 +83,14 @@ def try_load_follow_pages(engine: Engine) -> tuple[pd.DataFrame, str]:
     Returns: (pages_df, error_message)
     """
     try:
-        pages = pd.read_sql_query(
-            f"""
-            SELECT page_key, follow_type, follow_key, page_name, keywords_text, created_at, updated_at
-            FROM {FOLLOW_PAGES_TABLE}
-            """,
-            engine,
-        )
+        with turso_connect_autocommit(engine) as conn:
+            pages = pd.read_sql_query(
+                f"""
+                SELECT page_key, follow_type, follow_key, page_name, keywords_text, created_at, updated_at
+                FROM {FOLLOW_PAGES_TABLE}
+                """,
+                conn,
+            )
         return pages, ""
     except Exception as exc:
         return pd.DataFrame(), f"{type(exc).__name__}: {exc}"

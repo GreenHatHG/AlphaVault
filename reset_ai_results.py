@@ -9,7 +9,7 @@ from alphavault.env import load_dotenv_if_present
 
 load_dotenv_if_present()
 
-from alphavault.db.turso_db import get_turso_engine_from_env
+from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
     reset_ai_results_all,
@@ -64,7 +64,7 @@ def _select_existing_post_uids(engine, post_uids: list[str]) -> set[str]:
     placeholders = ", ".join([f":uid{i}" for i in range(len(post_uids))])
     params = {f"uid{i}": uid for i, uid in enumerate(post_uids)}
     query = f"SELECT post_uid FROM posts WHERE post_uid IN ({placeholders})"
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         rows = conn.execute(text(query), params).fetchall()
     return {str(r[0]) for r in rows if r and r[0]}
 
@@ -83,7 +83,7 @@ def main() -> None:
     archived_at = now_str()
 
     if args.all:
-        with engine.connect() as conn:
+        with turso_connect_autocommit(engine) as conn:
             total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
             total_assertions = int(conn.execute(text("SELECT COUNT(*) FROM assertions")).scalar() or 0)
 

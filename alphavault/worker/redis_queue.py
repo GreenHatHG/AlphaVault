@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from alphavault.constants import ENV_REDIS_QUEUE_KEY, ENV_REDIS_URL
+from alphavault.db.turso_db import turso_connect_autocommit
 from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import now_str
 from alphavault.weibo.display import format_weibo_display_md
@@ -83,7 +84,7 @@ def redis_try_push_dedup(
 
 
 def _cloud_post_is_processed_or_newer(engine: Engine, post_uid: str, payload_ingested_at: int) -> bool:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
                 text("SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"),

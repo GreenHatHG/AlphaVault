@@ -77,7 +77,7 @@ def _check_turso() -> None:
     engine = _get_turso_engine_from_env()
 
     try:
-        with engine.connect() as conn:
+        with turso_connect_autocommit(engine) as conn:
             conn.execute(text("SELECT 1")).fetchone()
     except Exception as e:
         raise RuntimeError(f"turso connect failed: {type(e).__name__}: {e}") from e
