@@ -38,28 +38,28 @@ def _render_ai_write_section(
 
     include_conf_by_topic: dict[str, float] = {}
     for item in include_items:
-        topic_key = str(item.get("topic_key") or "").strip()
-        if topic_key:
-            include_conf_by_topic[topic_key] = _parse_confidence(item.get("confidence", None), 0.8)
+        key = str(item.get("key") or item.get("topic_key") or "").strip()
+        if key:
+            include_conf_by_topic[key] = _parse_confidence(item.get("confidence", None), 0.8)
 
     unsure_conf_by_topic: dict[str, float] = {}
     for item in unsure_items:
-        topic_key = str(item.get("topic_key") or "").strip()
-        if topic_key and topic_key not in include_conf_by_topic:
-            unsure_conf_by_topic[topic_key] = _parse_confidence(item.get("confidence", None), 0.55)
+        key = str(item.get("key") or item.get("topic_key") or "").strip()
+        if key and key not in include_conf_by_topic:
+            unsure_conf_by_topic[key] = _parse_confidence(item.get("confidence", None), 0.55)
 
     include_keys_raw = [
-        str(item.get("topic_key") or "").strip()
+        str(item.get("key") or item.get("topic_key") or "").strip()
         for item in include_items
-        if str(item.get("topic_key") or "").strip()
+        if str(item.get("key") or item.get("topic_key") or "").strip()
     ]
     include_keys = sorted(set([k for k in include_keys_raw if k and k not in existing_in_cluster]))
     include_keys = _sort_by_count(include_keys, count_by_topic=count_by_topic)
 
     unsure_keys_raw = [
-        str(item.get("topic_key") or "").strip()
+        str(item.get("key") or item.get("topic_key") or "").strip()
         for item in unsure_items
-        if str(item.get("topic_key") or "").strip()
+        if str(item.get("key") or item.get("topic_key") or "").strip()
     ]
     unsure_keys = sorted(
         set(
@@ -74,7 +74,7 @@ def _render_ai_write_section(
 
     st.markdown("**include（默认全选）**")
     include_selected = st.multiselect(
-        "选择要加入本板块的 topic_key",
+        "选择要加入本板块的 key",
         options=include_keys,
         default=include_keys,
         format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
@@ -83,7 +83,7 @@ def _render_ai_write_section(
 
     st.markdown("**unsure（默认不选）**")
     unsure_selected = st.multiselect(
-        "选择要加入（unsure）的 topic_key",
+        "选择要加入（unsure）的 key",
         options=unsure_keys,
         default=[],
         format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
@@ -96,7 +96,7 @@ def _render_ai_write_section(
     ]
     to_write = [x for x in to_write if x]
     to_write = sorted(set(to_write))
-    st.caption(f"本次将写入：{len(to_write)} 个 topic_key")
+    st.caption(f"本次将写入：{len(to_write)} 个 key")
 
     if not st.button("确认加入这个板块", type="primary", disabled=not bool(to_write)):
         return
@@ -104,11 +104,12 @@ def _render_ai_write_section(
     try:
         ensure_cluster_schema(engine)
         payloads: list[dict] = []
-        for topic_key in to_write:
-            conf = include_conf_by_topic.get(topic_key)
+        for key in to_write:
+            conf = include_conf_by_topic.get(key)
             if conf is None:
-                conf = unsure_conf_by_topic.get(topic_key, 0.75)
-            payloads.append({"topic_key": topic_key, "source": "ai", "confidence": float(conf)})
+                conf = unsure_conf_by_topic.get(key, 0.75)
+            # Note: DB column name stays "topic_key", but we store the generic member key.
+            payloads.append({"topic_key": key, "source": "ai", "confidence": float(conf)})
         n = upsert_cluster_topics_detailed(
             engine,
             cluster_key=selected_cluster,
@@ -120,6 +121,6 @@ def _render_ai_write_section(
         st.error(f"写入失败：{type(exc).__name__}: {exc}")
         st.stop()
 
-    st.success(f"已写入 {n} 个 topic_key。")
+    st.success(f"已写入 {n} 个 key。")
     st.cache_data.clear()
     st.rerun()

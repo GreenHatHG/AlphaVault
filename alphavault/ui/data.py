@@ -24,6 +24,11 @@ from alphavault.topic_cluster import try_load_cluster_tables
 
 STREAMLIT_SOURCE_NAME = "archive"
 
+MATCH_KEY_PREFIX_STOCK = "stock"
+MATCH_KEY_PREFIX_INDUSTRY = "industry"
+MATCH_KEY_PREFIX_COMMODITY = "commodity"
+MATCH_KEY_PREFIX_INDEX = "index"
+
 
 @st.cache_data(show_spinner=False)
 def load_topic_cluster_sources(
@@ -50,6 +55,71 @@ def parse_json_list(value: object) -> List[str]:
     if isinstance(data, list):
         return [str(item) for item in data if str(item).strip()]
     return []
+
+
+def _uniq_str(items: list[object]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        s = str(item or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _make_match_key(prefix: str, value: object) -> str:
+    p = str(prefix or "").strip()
+    v = str(value or "").strip()
+    if not p or not v:
+        return ""
+    return f"{p}:{v}"
+
+
+def build_match_keys(
+    *,
+    topic_key: object,
+    stock_codes: object,
+    industries: object,
+    commodities: object,
+    indices: object,
+) -> list[str]:
+    """
+    Build a "match keys" list for one assertion.
+
+    This is the core refactor:
+    - topic_key is only the *main title* (1 per assertion)
+    - match_keys are the *coverage keys* (can be many)
+    """
+    keys: list[object] = []
+    topic = str(topic_key or "").strip()
+    if topic:
+        keys.append(topic)
+
+    codes = stock_codes if isinstance(stock_codes, list) else []
+    inds = industries if isinstance(industries, list) else []
+    comms = commodities if isinstance(commodities, list) else []
+    idxs = indices if isinstance(indices, list) else []
+
+    for code in codes:
+        k = _make_match_key(MATCH_KEY_PREFIX_STOCK, code)
+        if k:
+            keys.append(k)
+    for name in inds:
+        k = _make_match_key(MATCH_KEY_PREFIX_INDUSTRY, name)
+        if k:
+            keys.append(k)
+    for name in comms:
+        k = _make_match_key(MATCH_KEY_PREFIX_COMMODITY, name)
+        if k:
+            keys.append(k)
+    for name in idxs:
+        k = _make_match_key(MATCH_KEY_PREFIX_INDEX, name)
+        if k:
+            keys.append(k)
+
+    return _uniq_str(keys)
 
 
 def split_topic_key(value: str) -> Tuple[str, str]:
@@ -200,6 +270,17 @@ def enrich_assertions(assertions: pd.DataFrame) -> pd.DataFrame:
     assertions["topic_type"] = topic_parts.apply(lambda item: item[0])
     assertions["topic_value"] = topic_parts.apply(lambda item: item[1])
     assertions["action_group"] = assertions["action"].apply(action_group)
+
+    assertions["match_keys"] = assertions.apply(
+        lambda row: build_match_keys(
+            topic_key=row.get("topic_key"),
+            stock_codes=row.get("stock_codes"),
+            industries=row.get("industries"),
+            commodities=row.get("commodities"),
+            indices=row.get("indices"),
+        ),
+        axis=1,
+    )
     return assertions
 
 

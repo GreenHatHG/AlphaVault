@@ -85,26 +85,36 @@ def _render_member_add(
     selected_cluster: str,
 ) -> None:
     st.markdown("**增加**")
-    all_topic_keys = sorted(
-        [
-            str(x).strip()
-            for x in assertions_all.get("topic_key", pd.Series(dtype=str)).dropna().unique().tolist()
-            if str(x).strip()
-        ]
-    )
-    search = (
-        st.text_input("搜索 topic_key（建议先搜）", value="", key="topic_cluster_search_topic_key")
-        .strip()
-    )
+    all_keys: list[str] = []
+    if "match_keys" in assertions_all.columns:
+        flat: list[str] = []
+        for item in assertions_all["match_keys"].tolist():
+            if not isinstance(item, list):
+                continue
+            for k in item:
+                s = str(k).strip()
+                if s:
+                    flat.append(s)
+        all_keys = sorted(set(flat))
+    else:
+        all_keys = sorted(
+            [
+                str(x).strip()
+                for x in assertions_all.get("topic_key", pd.Series(dtype=str)).dropna().unique().tolist()
+                if str(x).strip()
+            ]
+        )
+
+    search = st.text_input("搜索 key（建议先搜）", value="", key="topic_cluster_search_member_key").strip()
     if search:
-        candidates = [k for k in all_topic_keys if search.lower() in k.lower()]
+        candidates = [k for k in all_keys if search.lower() in k.lower()]
         candidates = candidates[:300]
     else:
         candidates = []
-        st.caption("提示：topic_key 可能很多，请先搜索再增加。")
+        st.caption("提示：key 可能很多，请先搜索再增加。")
 
     to_add = st.multiselect(
-        "选择要增加的 topic_key",
+        "选择要增加的 key",
         options=candidates,
         default=[],
         key="topic_cluster_to_add",
@@ -117,7 +127,7 @@ def _render_member_add(
     except Exception as exc:
         st.error(f"增加失败：{type(exc).__name__}: {exc}")
         st.stop()
-    st.success(f"已增加 {n} 个 topic_key。")
+    st.success(f"已增加 {n} 个 key。")
     st.cache_data.clear()
     st.rerun()
 
@@ -130,7 +140,7 @@ def _render_member_remove(
 ) -> None:
     st.markdown("**移除**")
     to_remove = st.multiselect(
-        "选择要移除的 topic_key",
+        "选择要移除的 key",
         options=current_topics,
         default=[],
         key="topic_cluster_to_remove",
@@ -143,7 +153,7 @@ def _render_member_remove(
     except Exception as exc:
         st.error(f"移除失败：{type(exc).__name__}: {exc}")
         st.stop()
-    st.success(f"已移除 {n} 个 topic_key。")
+    st.success(f"已移除 {n} 个 key。")
     st.cache_data.clear()
     st.rerun()
 
@@ -152,7 +162,7 @@ def _render_current_member_list(current_topics: list[str]) -> None:
     st.markdown("**当前成员列表**")
     if current_topics:
         st.dataframe(
-            pd.DataFrame({"topic_key": current_topics}).head(500),
+            pd.DataFrame({"key": current_topics}).head(500),
             width="stretch",
             hide_index=True,
         )
@@ -204,7 +214,7 @@ def show_topic_cluster_admin(
     load_error: str,
 ) -> None:
     st.markdown("**主题聚合（板块）**")
-    st.caption("把很多 topic_key 合成一个板块看；不会改旧 topic_key。")
+    st.caption("把很多 key 合成一个板块看（key 可以是 stock/industry/commodity/index/topic_key）。")
 
     _maybe_init_cluster_tables(engine, load_error)
 
@@ -212,7 +222,7 @@ def show_topic_cluster_admin(
     _render_cluster_upsert_form(engine)
 
     st.divider()
-    st.markdown("**成员管理（topic_key → 板块）**")
+    st.markdown("**成员管理（key → 板块）**")
     if clusters.empty:
         st.info("还没有板块。先在上面创建一个。")
         return
@@ -234,7 +244,7 @@ def show_topic_cluster_admin(
 
     col_left, col_mid = st.columns([2, 1])
     with col_left:
-        st.caption("v2 规则：一个 topic_key 可以属于多个板块；加入不会自动移走。")
+        st.caption("规则：一个 key 可以属于多个板块；加入不会自动移走。")
     with col_mid:
         st.metric("当前成员数", f"{len(current_topics)}")
 

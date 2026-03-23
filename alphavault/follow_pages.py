@@ -5,7 +5,7 @@ Follow pages (no-code configs) stored in Turso.
 
 One page = follow one thing:
 - follow_type: "topic" or "cluster"
-- follow_key: topic_key or cluster_key
+- follow_key: a key (from assertion.match_keys, e.g. stock:/industry:/topic_key) or cluster_key
 - keywords_text: optional OR keywords
 """
 

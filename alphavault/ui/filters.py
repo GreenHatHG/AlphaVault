@@ -17,6 +17,23 @@ from alphavault.topic_cluster import UNCATEGORIZED_LABEL
 DEFAULT_DATE_RANGE_DAYS = 30
 MAX_FILTER_OPTIONS = 2000
 MAX_FILTER_MATCHES = 300
+UNTAGGED_LABEL = "未标注"
+
+GROUP_MODE_TOPIC = "topic"
+GROUP_MODE_CLUSTER = "cluster"
+GROUP_MODE_STOCK = "stock"
+GROUP_MODE_INDUSTRY = "industry"
+GROUP_MODE_COMMODITY = "commodity"
+GROUP_MODE_INDEX = "index"
+
+GROUP_MODE_LABELS = {
+    GROUP_MODE_TOPIC: "主题",
+    GROUP_MODE_CLUSTER: "板块",
+    GROUP_MODE_STOCK: "个股",
+    GROUP_MODE_INDUSTRY: "行业",
+    GROUP_MODE_COMMODITY: "商品",
+    GROUP_MODE_INDEX: "指数",
+}
 
 REQUIRED_POST_COLS: dict[str, object] = {
     "post_uid": "",
@@ -80,11 +97,38 @@ def _ensure_required_columns(df: pd.DataFrame, required: dict[str, object]) -> p
     return out
 
 
-def _sidebar_grouping_config(assertions: pd.DataFrame) -> tuple[bool, str, str]:
-    group_by_cluster = st.sidebar.checkbox("按板块看（聚合）", value=False, key="filter_group_by_cluster")
-    group_col = "cluster_display" if group_by_cluster else "topic_key"
-    group_label = "板块" if group_by_cluster else "主题"
-    return group_by_cluster, group_col, group_label
+def _sidebar_grouping_config(assertions: pd.DataFrame) -> tuple[str, str, str]:
+    # Legacy toggle: keep for old sessions, but the new UI uses group_mode.
+    legacy_group_by_cluster = bool(st.session_state.get("filter_group_by_cluster"))
+    default_mode = GROUP_MODE_CLUSTER if legacy_group_by_cluster else GROUP_MODE_TOPIC
+
+    options = [
+        GROUP_MODE_TOPIC,
+        GROUP_MODE_CLUSTER,
+        GROUP_MODE_STOCK,
+        GROUP_MODE_INDUSTRY,
+        GROUP_MODE_COMMODITY,
+        GROUP_MODE_INDEX,
+    ]
+    try:
+        default_index = options.index(default_mode)
+    except ValueError:
+        default_index = 0
+
+    group_mode = st.sidebar.radio(
+        "按什么看",
+        options=options,
+        index=default_index,
+        format_func=lambda x: GROUP_MODE_LABELS.get(str(x), str(x)),
+        key="filter_group_mode",
+        horizontal=True,
+    )
+    group_mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
+
+    # Use a unified output column so other tabs can stay simple.
+    group_col = "group_key"
+    group_label = GROUP_MODE_LABELS.get(group_mode, "主题")
+    return group_mode, group_col, group_label
 
 
 def _pick_date_col(posts: pd.DataFrame) -> str:
@@ -306,19 +350,197 @@ def _coalesce_joined_cols(df: pd.DataFrame, *, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def _uniq_str(items: list[object]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        s = str(item or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _match_values(match_keys_value: object, *, prefix: str) -> list[str]:
+    """
+    Extract values from match_keys by prefix, like:
+    - prefix="stock:" -> ["601899.SH", ...]
+    """
+    if not isinstance(match_keys_value, list):
+        return []
+    pre = str(prefix or "")
+    out: list[object] = []
+    for item in match_keys_value:
+        s = str(item or "").strip()
+        if not s or not s.startswith(pre):
+            continue
+        out.append(s[len(pre) :].strip())
+    return _uniq_str(out)
+
+
+def _build_stock_name_by_code(assertions_joined: pd.DataFrame) -> dict[str, str]:
+    """
+    Best-effort code -> name mapping for UI labels.
+
+    Keep it conservative:
+    - only trust rows where exactly 1 code and 1 name
+    """
+    if assertions_joined.empty:
+        return {}
+    if "stock_codes" not in assertions_joined.columns or "stock_names" not in assertions_joined.columns:
+        return {}
+
+    counts: dict[str, dict[str, int]] = {}
+    for codes, names in zip(
+        assertions_joined["stock_codes"].tolist(),
+        assertions_joined["stock_names"].tolist(),
+        strict=False,
+    ):
+        if not isinstance(codes, list) or not isinstance(names, list):
+            continue
+        codes = [str(x).strip() for x in codes if str(x).strip()]
+        names = [str(x).strip() for x in names if str(x).strip()]
+        if len(codes) != 1 or len(names) != 1:
+            continue
+        code = codes[0]
+        name = names[0]
+        if not code or not name:
+            continue
+        counts.setdefault(code, {})
+        counts[code][name] = int(counts[code].get(name, 0)) + 1
+
+    out: dict[str, str] = {}
+    for code, name_counts in counts.items():
+        # pick the most frequent name; stable tiebreak by name string.
+        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][0]
+        out[str(code).strip()] = str(best).strip()
+    return out
+
+
+def _format_stock_label(code: str, *, stock_name_by_code: dict[str, str]) -> str:
+    c = str(code or "").strip()
+    if not c:
+        return ""
+    name = str(stock_name_by_code.get(c, "") or "").strip()
+    if name:
+        return f"{name} ({c})"
+    return c
+
+
+def _group_key_list_for_row(
+    row: pd.Series,
+    *,
+    group_mode: str,
+    stock_name_by_code: dict[str, str],
+) -> list[str]:
+    mode = str(group_mode or "").strip()
+    match_keys = row.get("match_keys")
+
+    if mode == GROUP_MODE_STOCK:
+        codes = _match_values(match_keys, prefix="stock:")
+        labels = [_format_stock_label(code, stock_name_by_code=stock_name_by_code) for code in codes]
+        labels = [x for x in labels if x]
+        return labels if labels else [UNTAGGED_LABEL]
+
+    if mode == GROUP_MODE_INDUSTRY:
+        values = _match_values(match_keys, prefix="industry:")
+        values = [str(x).strip() for x in values if str(x).strip()]
+        return values if values else [UNTAGGED_LABEL]
+
+    if mode == GROUP_MODE_COMMODITY:
+        values = _match_values(match_keys, prefix="commodity:")
+        values = [str(x).strip() for x in values if str(x).strip()]
+        return values if values else [UNTAGGED_LABEL]
+
+    if mode == GROUP_MODE_INDEX:
+        values = _match_values(match_keys, prefix="index:")
+        values = [str(x).strip() for x in values if str(x).strip()]
+        return values if values else [UNTAGGED_LABEL]
+
+    return [UNTAGGED_LABEL]
+
+
+def _explode_group_key_list(assertions_joined: pd.DataFrame, *, list_col: str) -> pd.DataFrame:
+    """
+    Explode a list column into row-level group_key.
+    Keep exactly 1 row even if list is empty (use UNTAGGED_LABEL).
+    """
+    if assertions_joined.empty:
+        return assertions_joined
+    if list_col not in assertions_joined.columns:
+        return assertions_joined
+
+    out = assertions_joined.copy()
+    out[list_col] = out[list_col].apply(lambda v: v if isinstance(v, list) else [])
+    out[list_col] = out[list_col].apply(lambda v: v if v else [UNTAGGED_LABEL])
+    out = out.explode(list_col, ignore_index=True)
+    out["group_key"] = out[list_col].apply(lambda x: str(x or "").strip())
+    out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNTAGGED_LABEL)
+    out = out.drop(columns=[list_col])
+    return out
+
+
+def _apply_group_mode(assertions_joined: pd.DataFrame, *, group_mode: str) -> pd.DataFrame:
+    mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
+    out = assertions_joined.copy()
+
+    if mode == GROUP_MODE_TOPIC:
+        if "topic_key" in out.columns:
+            out["group_key"] = out["topic_key"].astype(str).str.strip()
+        else:
+            out["group_key"] = ""
+        out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNTAGGED_LABEL)
+        return out
+
+    if mode == GROUP_MODE_CLUSTER:
+        out = _explode_clusters_for_grouping(out)
+        if "cluster_display" in out.columns:
+            out["group_key"] = out["cluster_display"].astype(str).str.strip()
+        else:
+            out["group_key"] = UNCATEGORIZED_LABEL
+        out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNCATEGORIZED_LABEL)
+        return out
+
+    # Coverage modes: use match_keys (generated in ui.data.enrich_assertions).
+    stock_name_by_code: dict[str, str] = {}
+    if mode == GROUP_MODE_STOCK:
+        stock_name_by_code = _build_stock_name_by_code(out)
+
+    list_col = "__group_key_list"
+    out[list_col] = out.apply(
+        lambda row: _group_key_list_for_row(
+            row,
+            group_mode=mode,
+            stock_name_by_code=stock_name_by_code,
+        ),
+        axis=1,
+    )
+    out = _explode_group_key_list(out, list_col=list_col)
+    return out
+
+
 def _sidebar_filter_uncategorized(
     assertions_joined: pd.DataFrame,
     *,
-    group_by_cluster: bool,
+    group_mode: str,
 ) -> tuple[pd.DataFrame, bool]:
-    show_uncategorized = True
-    if not group_by_cluster:
-        return assertions_joined, show_uncategorized
-    show_uncategorized = st.sidebar.checkbox("显示未归类", value=True, key="filter_show_uncategorized")
-    if show_uncategorized or "cluster_display" not in assertions_joined.columns:
-        return assertions_joined, show_uncategorized
-    out = assertions_joined[assertions_joined["cluster_display"] != UNCATEGORIZED_LABEL]
-    return out, show_uncategorized
+    mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
+    if mode == GROUP_MODE_CLUSTER:
+        show = st.sidebar.checkbox("显示未归类", value=True, key="filter_show_uncategorized_cluster")
+        if show or "group_key" not in assertions_joined.columns:
+            return assertions_joined, show
+        out = assertions_joined[assertions_joined["group_key"] != UNCATEGORIZED_LABEL]
+        return out, show
+
+    if mode in {GROUP_MODE_STOCK, GROUP_MODE_INDUSTRY, GROUP_MODE_COMMODITY, GROUP_MODE_INDEX}:
+        show = st.sidebar.checkbox("显示未标注", value=False, key=f"filter_show_untagged:{mode}")
+        if show or "group_key" not in assertions_joined.columns:
+            return assertions_joined, show
+        out = assertions_joined[assertions_joined["group_key"] != UNTAGGED_LABEL]
+        return out, show
+
+    return assertions_joined, True
 
 
 def _sidebar_filter_groups(
@@ -327,7 +549,7 @@ def _sidebar_filter_groups(
     assertions_all: pd.DataFrame,
     group_col: str,
     group_label: str,
-    group_by_cluster: bool,
+    group_mode: str,
     show_uncategorized: bool,
 ) -> pd.DataFrame:
     if group_col not in assertions_all.columns:
@@ -335,8 +557,13 @@ def _sidebar_filter_groups(
 
     s = assertions_all[group_col].dropna().astype(str).str.strip()
     s = s[s.ne("")]
-    if group_by_cluster and not show_uncategorized:
+    # group_mode filtering is already applied in _sidebar_filter_uncategorized,
+    # but keep a safe guard here for option building.
+    mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
+    if mode == GROUP_MODE_CLUSTER and not show_uncategorized:
         s = s[s.ne(UNCATEGORIZED_LABEL)]
+    if mode in {GROUP_MODE_STOCK, GROUP_MODE_INDUSTRY, GROUP_MODE_COMMODITY, GROUP_MODE_INDEX} and not show_uncategorized:
+        s = s[s.ne(UNTAGGED_LABEL)]
     if s.empty:
         return assertions_joined
 
@@ -434,25 +661,24 @@ def _filter_assertions_sidebar(
     assertions: pd.DataFrame,
     *,
     posts_filtered: pd.DataFrame,
-    group_by_cluster: bool,
+    group_mode: str,
     group_col: str,
     group_label: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
     assertions_all = _ensure_required_columns(assertions, REQUIRED_ASSERT_COLS)
     assertions_joined = _join_assertions_with_posts(assertions_all, posts_filtered=posts_filtered)
     assertions_joined = _coalesce_joined_cols(assertions_joined, cols=ASSERTIONS_COALESCE_COLS)
-    if group_by_cluster:
-        assertions_joined = _explode_clusters_for_grouping(assertions_joined)
+    assertions_joined = _apply_group_mode(assertions_joined, group_mode=group_mode)
     assertions_joined, show_uncategorized = _sidebar_filter_uncategorized(
         assertions_joined,
-        group_by_cluster=group_by_cluster,
+        group_mode=group_mode,
     )
     assertions_joined = _sidebar_filter_groups(
         assertions_joined,
-        assertions_all=assertions_joined if group_by_cluster else assertions_all,
+        assertions_all=assertions_joined,
         group_col=group_col,
         group_label=group_label,
-        group_by_cluster=group_by_cluster,
+        group_mode=group_mode,
         show_uncategorized=show_uncategorized,
     )
     assertions_joined = _sidebar_filter_actions(assertions_joined, assertions_all=assertions_all)
@@ -470,12 +696,12 @@ def build_filters(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     st.sidebar.header("筛选条件")
 
-    group_by_cluster, group_col, group_label = _sidebar_grouping_config(assertions)
+    group_mode, group_col, group_label = _sidebar_grouping_config(assertions)
     posts_filtered, date_col, start_date, end_date, keyword = _filter_posts_sidebar(posts, posts_all=posts)
     assertions_joined, posts_filtered, only_with_assertions = _filter_assertions_sidebar(
         assertions,
         posts_filtered=posts_filtered,
-        group_by_cluster=group_by_cluster,
+        group_mode=group_mode,
         group_col=group_col,
         group_label=group_label,
     )
@@ -485,7 +711,7 @@ def build_filters(
         "keyword": keyword,
         "only_with_assertions": only_with_assertions,
         "date_col": date_col,
-        "group_by_cluster": group_by_cluster,
+        "group_mode": group_mode,
         "group_col": group_col,
         "group_label": group_label,
     }
