@@ -78,7 +78,9 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
         request = getattr(exc, "request", None)
         if request is not None:
             try:
-                details["request_method"] = _compact_text(getattr(request, "method", ""))
+                details["request_method"] = _compact_text(
+                    getattr(request, "method", "")
+                )
                 details["request_url"] = _compact_text(str(getattr(request, "url", "")))
             except Exception:
                 pass
@@ -87,7 +89,9 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
         if litellm_debug_info:
             # This may contain prompt snippets depending on LiteLLM settings.
             # We only store a short, compact preview.
-            details["litellm_debug_info"] = _truncate_text(_compact_text(litellm_debug_info), 400)
+            details["litellm_debug_info"] = _truncate_text(
+                _compact_text(litellm_debug_info), 400
+            )
 
         cause_chain: List[Dict[str, str]] = []
         cur: Optional[BaseException] = exc
@@ -95,7 +99,9 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
         for _ in range(4):
             if cur is None:
                 break
-            next_exc = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+            next_exc = getattr(cur, "__cause__", None) or getattr(
+                cur, "__context__", None
+            )
             if next_exc is None:
                 break
             obj_id = id(next_exc)
@@ -126,7 +132,14 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
         details = extract_llm_error_details(exc)
         parts: List[str] = []
         parts.append(str(details.get("type") or type(exc).__name__))
-        for key in ("status_code", "provider", "model", "request_id", "code", "error_type"):
+        for key in (
+            "status_code",
+            "provider",
+            "model",
+            "request_id",
+            "code",
+            "error_type",
+        ):
             value = details.get(key)
             if value is None or value == "":
                 continue
@@ -141,7 +154,9 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
             for item in cause_items:
                 msg = _compact_text(item.get("message", ""))
                 if msg:
-                    picked.append({"type": _compact_text(item.get("type", "")), "message": msg})
+                    picked.append(
+                        {"type": _compact_text(item.get("type", "")), "message": msg}
+                    )
             if not picked and cause_items:
                 first = cause_items[0]
                 picked.append(
@@ -152,11 +167,11 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
                 )
             if picked:
                 parts.append(
-                    f"cause={picked[0].get('type','')}: {_truncate_text(_compact_text(picked[0].get('message','')), 200)}"
+                    f"cause={picked[0].get('type', '')}: {_truncate_text(_compact_text(picked[0].get('message', '')), 200)}"
                 )
             if len(picked) >= 2:
                 parts.append(
-                    f"cause2={picked[1].get('type','')}: {_truncate_text(_compact_text(picked[1].get('message','')), 140)}"
+                    f"cause2={picked[1].get('type', '')}: {_truncate_text(_compact_text(picked[1].get('message', '')), 140)}"
                 )
             for item in picked[:2]:
                 msg = _compact_text(item.get("message", "")).lower()
@@ -165,7 +180,9 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
                     break
         return _truncate_text(" ".join(parts), limit)
     except Exception:
-        return _truncate_text(f"{type(exc).__name__} message={_compact_text(str(exc))}", limit)
+        return _truncate_text(
+            f"{type(exc).__name__} message={_compact_text(str(exc))}", limit
+        )
 
 
 def _append_trace(trace_out: Optional[Path], payload: Dict[str, Any]) -> None:
@@ -174,4 +191,3 @@ def _append_trace(trace_out: Optional[Path], payload: Dict[str, Any]) -> None:
     trace_out.parent.mkdir(parents=True, exist_ok=True)
     with trace_out.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-

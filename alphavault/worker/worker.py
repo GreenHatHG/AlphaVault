@@ -9,20 +9,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Optional, Tuple
 
 from sqlalchemy.engine import Engine
 
 from alphavault.constants import (
     ENV_AI_API_KEY,
-    ENV_AI_API_MODE,
-    ENV_AI_BASE_URL,
-    ENV_AI_MAX_INFLIGHT,
-    ENV_AI_MODEL,
-    ENV_AI_PROMPT_VERSION,
-    ENV_AI_REASONING_EFFORT,
     ENV_AI_STREAM,
-    ENV_AI_TEMPERATURE,
     ENV_AI_TRACE_OUT,
     ENV_RSS_ACTIVE_HOURS,
     ENV_RSS_INTERVAL_SECONDS,
@@ -42,7 +35,10 @@ from alphavault.ai.analyze import (
 from alphavault.ai._client import AiInvalidJsonError
 from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
 from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
-from alphavault.db.turso_db import get_turso_engine_from_env, is_turso_stream_not_found_error
+from alphavault.db.turso_db import (
+    get_turso_engine_from_env,
+    is_turso_stream_not_found_error,
+)
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
     load_cloud_post,
@@ -121,7 +117,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
     base_url = str(args.base_url or "").strip()
     if bool(args.verbose) and base_url:
         if not base_url.rstrip("/").endswith("/v1"):
-            print(f"[ai] warn base_url_maybe_missing_v1 base_url={base_url}", flush=True)
+            print(
+                f"[ai] warn base_url_maybe_missing_v1 base_url={base_url}", flush=True
+            )
 
     api_key = ""
     if args.api_key:
@@ -141,7 +139,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         ai_stream=ai_stream,
         ai_retries=max(0, int(args.ai_retries)),
         ai_temperature=float(args.ai_temperature),
-        ai_reasoning_effort=str(args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT),
+        ai_reasoning_effort=str(
+            args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
+        ),
         ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
         ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
         trace_out=trace_out,
@@ -189,7 +189,10 @@ def _build_topic_prompt_v3_with_prompt_chars_limit(
     Returns:
       (runtime_context, truncated_nodes, prompt, prompt_chars, node_chars_limit, compact_json, include_comments)
     """
-    def build_ctx(*, node_chars: int, include_comments: bool) -> tuple[dict[str, object], int]:
+
+    def build_ctx(
+        *, node_chars: int, include_comments: bool
+    ) -> tuple[dict[str, object], int]:
         return build_topic_runtime_context(
             root_key=root_key,
             root_segment=root_segment,
@@ -207,18 +210,30 @@ def _build_topic_prompt_v3_with_prompt_chars_limit(
         p = build_topic_prompt(ai_topic_package=pkg, compact_json=bool(compact_json))
         return p, len(p)
 
-    def search_best_cap(*, include_comments: bool) -> Optional[tuple[dict[str, object], int, str, int, int]]:
-        base_ctx, _base_truncated = build_ctx(node_chars=0, include_comments=include_comments)
+    def search_best_cap(
+        *, include_comments: bool
+    ) -> Optional[tuple[dict[str, object], int, str, int, int]]:
+        base_ctx, _base_truncated = build_ctx(
+            node_chars=0, include_comments=include_comments
+        )
         max_len = max(1, _max_message_tree_text_len(base_ctx.get("message_tree")))
         lo = 1
         hi = int(max_len)
         best: Optional[tuple[dict[str, object], int, str, int, int]] = None
         while lo <= hi:
             mid = (lo + hi) // 2
-            mid_ctx, mid_truncated = build_ctx(node_chars=mid, include_comments=include_comments)
+            mid_ctx, mid_truncated = build_ctx(
+                node_chars=mid, include_comments=include_comments
+            )
             mid_prompt, mid_chars = build_prompt(mid_ctx, compact_json=True)
             if mid_chars <= max_prompt_chars:
-                best = (mid_ctx, int(mid_truncated), mid_prompt, int(mid_chars), int(mid))
+                best = (
+                    mid_ctx,
+                    int(mid_truncated),
+                    mid_prompt,
+                    int(mid_chars),
+                    int(mid),
+                )
                 lo = mid + 1
                 continue
             hi = mid - 1
@@ -228,40 +243,92 @@ def _build_topic_prompt_v3_with_prompt_chars_limit(
     ctx_full, truncated_full = build_ctx(node_chars=0, include_comments=True)
     pretty_prompt, pretty_chars = build_prompt(ctx_full, compact_json=False)
     if max_prompt_chars <= 0 or pretty_chars <= max_prompt_chars:
-        return ctx_full, int(truncated_full), pretty_prompt, int(pretty_chars), 0, False, True
+        return (
+            ctx_full,
+            int(truncated_full),
+            pretty_prompt,
+            int(pretty_chars),
+            0,
+            False,
+            True,
+        )
 
     # 2) Full context + compact JSON (save chars on whitespace)
     compact_prompt, compact_chars = build_prompt(ctx_full, compact_json=True)
     if compact_chars <= max_prompt_chars:
-        return ctx_full, int(truncated_full), compact_prompt, int(compact_chars), 0, True, True
+        return (
+            ctx_full,
+            int(truncated_full),
+            compact_prompt,
+            int(compact_chars),
+            0,
+            True,
+            True,
+        )
 
     # 3) Full context + compact JSON + per-node cap
     best = search_best_cap(include_comments=True)
     if best is not None:
         best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap = best
-        return best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap, True, True
+        return (
+            best_ctx,
+            best_truncated,
+            best_prompt,
+            best_prompt_chars,
+            best_cap,
+            True,
+            True,
+        )
 
     # 4) Fallback: remove virtual comment nodes (keep only status nodes)
     ctx_no_comments, truncated_nc = build_ctx(node_chars=0, include_comments=False)
-    nc_pretty_prompt, nc_pretty_chars = build_prompt(ctx_no_comments, compact_json=False)
+    nc_pretty_prompt, nc_pretty_chars = build_prompt(
+        ctx_no_comments, compact_json=False
+    )
     if nc_pretty_chars <= max_prompt_chars:
-        return ctx_no_comments, int(truncated_nc), nc_pretty_prompt, int(nc_pretty_chars), 0, False, False
+        return (
+            ctx_no_comments,
+            int(truncated_nc),
+            nc_pretty_prompt,
+            int(nc_pretty_chars),
+            0,
+            False,
+            False,
+        )
 
-    nc_compact_prompt, nc_compact_chars = build_prompt(ctx_no_comments, compact_json=True)
+    nc_compact_prompt, nc_compact_chars = build_prompt(
+        ctx_no_comments, compact_json=True
+    )
     if nc_compact_chars <= max_prompt_chars:
-        return ctx_no_comments, int(truncated_nc), nc_compact_prompt, int(nc_compact_chars), 0, True, False
+        return (
+            ctx_no_comments,
+            int(truncated_nc),
+            nc_compact_prompt,
+            int(nc_compact_chars),
+            0,
+            True,
+            False,
+        )
 
     best_nc = search_best_cap(include_comments=False)
     if best_nc is not None:
         best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap = best_nc
-        return best_ctx, best_truncated, best_prompt, best_prompt_chars, best_cap, True, False
+        return (
+            best_ctx,
+            best_truncated,
+            best_prompt,
+            best_prompt_chars,
+            best_cap,
+            True,
+            False,
+        )
 
     raise RuntimeError(f"topic_prompt_too_long max_prompt_chars={max_prompt_chars}")
 
 
 def _clamp_int(value: object, low: int, high: int, default: int) -> int:
     try:
-        v = int(value)  # type: ignore[arg-type]
+        v = int(str(value).strip())
     except Exception:
         return int(default)
     return int(max(low, min(high, v)))
@@ -269,7 +336,7 @@ def _clamp_int(value: object, low: int, high: int, default: int) -> int:
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
     try:
-        v = float(value)  # type: ignore[arg-type]
+        v = float(str(value).strip())
     except Exception:
         return float(default)
     return float(max(low, min(high, v)))
@@ -335,14 +402,20 @@ def _map_topic_prompt_items_to_assertions(
             node = message_lookup.get(("status", source_id))
         node_text = str((node or {}).get("text") or "")
 
-        evidence = quote if quote and node_text and quote in node_text else (node_text[:120] if node_text else quote)
+        evidence = (
+            quote
+            if quote and node_text and quote in node_text
+            else (node_text[:120] if node_text else quote)
+        )
         if not evidence:
             continue
 
         summary = str(raw_item.get("summary") or "").strip() or "未提供摘要"
         confidence = _clamp_float(raw_item.get("confidence"), 0.0, 1.0, 0.5)
         action_strength = _clamp_int(raw_item.get("action_strength"), 0, 3, 1)
-        action = normalize_action(str(raw_item.get("action") or "").strip() or "trade.watch")
+        action = normalize_action(
+            str(raw_item.get("action") or "").strip() or "trade.watch"
+        )
 
         row = {
             "topic_key": topic_key,
@@ -351,11 +424,21 @@ def _map_topic_prompt_items_to_assertions(
             "summary": summary,
             "evidence": evidence,
             "confidence": confidence,
-            "stock_codes_json": json.dumps(_as_str_list(raw_item.get("stock_codes")), ensure_ascii=False),
-            "stock_names_json": json.dumps(_as_str_list(raw_item.get("stock_names")), ensure_ascii=False),
-            "industries_json": json.dumps(_as_str_list(raw_item.get("industries")), ensure_ascii=False),
-            "commodities_json": json.dumps(_as_str_list(raw_item.get("commodities")), ensure_ascii=False),
-            "indices_json": json.dumps(_as_str_list(raw_item.get("indices")), ensure_ascii=False),
+            "stock_codes_json": json.dumps(
+                _as_str_list(raw_item.get("stock_codes")), ensure_ascii=False
+            ),
+            "stock_names_json": json.dumps(
+                _as_str_list(raw_item.get("stock_names")), ensure_ascii=False
+            ),
+            "industries_json": json.dumps(
+                _as_str_list(raw_item.get("industries")), ensure_ascii=False
+            ),
+            "commodities_json": json.dumps(
+                _as_str_list(raw_item.get("commodities")), ensure_ascii=False
+            ),
+            "indices_json": json.dumps(
+                _as_str_list(raw_item.get("indices")), ensure_ascii=False
+            ),
         }
         bucket = out.setdefault(post_uid, [])
         if len(bucket) < max(0, int(max_assertions_per_post)):
@@ -418,8 +501,12 @@ def _process_one_post_uid_topic_prompt_v3(
 
     post_count = len(thread_rows)
     thread_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
-    kept = thread_rows[:MAX_THREAD_POSTS] if post_count > MAX_THREAD_POSTS else thread_rows
-    if str(post.post_uid or "").strip() not in {str(r.get("post_uid") or "").strip() for r in kept}:
+    kept = (
+        thread_rows[:MAX_THREAD_POSTS] if post_count > MAX_THREAD_POSTS else thread_rows
+    )
+    if str(post.post_uid or "").strip() not in {
+        str(r.get("post_uid") or "").strip() for r in kept
+    }:
         kept = [current_row, *kept[: max(0, MAX_THREAD_POSTS - 1)]]
     trimmed_count = max(0, post_count - len(kept))
 
@@ -457,7 +544,12 @@ def _process_one_post_uid_topic_prompt_v3(
         posts=kept,
         max_prompt_chars=MAX_TOPIC_PROMPT_CHARS,
     )
-    if trimmed_count > 0 or truncated_nodes > 0 or compact_json or (not include_comments):
+    if (
+        trimmed_count > 0
+        or truncated_nodes > 0
+        or compact_json
+        or (not include_comments)
+    ):
         print(
             " ".join(
                 [
@@ -481,10 +573,18 @@ def _process_one_post_uid_topic_prompt_v3(
     trace_label = f"topic:{root_key}"
 
     if config.verbose:
-        print(f"[llm] call_api topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)}", flush=True)
+        print(
+            f"[llm] call_api topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)}",
+            flush=True,
+        )
 
     retry_count_by_uid = {
-        str(row.get("post_uid") or "").strip(): int(row.get("ai_retry_count") or 1)
+        str(row.get("post_uid") or "").strip(): _clamp_int(
+            row.get("ai_retry_count"),
+            1,
+            1000,
+            1,
+        )
         for row in kept
         if str(row.get("post_uid") or "").strip()
     }
@@ -502,7 +602,9 @@ def _process_one_post_uid_topic_prompt_v3(
             timeout_seconds=float(config.ai_timeout_seconds),
             retry_count=int(config.ai_retries),
             temperature=float(config.ai_temperature),
-            reasoning_effort=str(config.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT),
+            reasoning_effort=str(
+                config.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
+            ),
             trace_out=config.trace_out,
             trace_label=trace_label,
             validator=validate_topic_prompt_v3_ai_result,
@@ -510,7 +612,10 @@ def _process_one_post_uid_topic_prompt_v3(
 
         if config.verbose:
             cost = time.time() - start_ts
-            print(f"[llm] done topic_prompt_v3 root_key={root_key} cost={cost:.1f}s", flush=True)
+            print(
+                f"[llm] done topic_prompt_v3 root_key={root_key} cost={cost:.1f}s",
+                flush=True,
+            )
 
         if not isinstance(parsed, dict):
             raise RuntimeError("ai_topic_invalid_json_root")
@@ -520,7 +625,9 @@ def _process_one_post_uid_topic_prompt_v3(
             raise RuntimeError("ai_topic_message_lookup_invalid")
 
         post_uid_by_pid = {
-            str(row.get("platform_post_id") or "").strip(): str(row.get("post_uid") or "").strip()
+            str(row.get("platform_post_id") or "").strip(): str(
+                row.get("post_uid") or ""
+            ).strip()
             for row in kept
             if str(row.get("post_uid") or "").strip() in locked_set
         }
@@ -593,7 +700,10 @@ def _process_one_post_uid_topic_prompt_v3(
                 )
             except Exception:
                 continue
-        print(f"[llm] error topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)} {msg}", flush=True)
+        print(
+            f"[llm] error topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)} {msg}",
+            flush=True,
+        )
         return
 
 
@@ -652,7 +762,11 @@ def _process_one_post_uid(
 
         final_result = result
         if final_result.invest_score < config.relevant_threshold:
-            final_result = AnalyzeResult(status="irrelevant", invest_score=final_result.invest_score, assertions=[])
+            final_result = AnalyzeResult(
+                status="irrelevant",
+                invest_score=final_result.invest_score,
+                assertions=[],
+            )
         else:
             final_result.assertions = validate_and_adjust_assertions(
                 final_result.assertions,
@@ -660,7 +774,9 @@ def _process_one_post_uid(
                 quoted_text=analysis_context["quoted_text"],
             )
 
-        assertions = final_result.assertions if final_result.status == "relevant" else []
+        assertions = (
+            final_result.assertions if final_result.status == "relevant" else []
+        )
 
         write_assertions_and_mark_done(
             engine,
@@ -695,14 +811,25 @@ def _process_one_post_uid(
             retry_count = 1
         next_retry = now_epoch + _backoff_seconds(retry_count)
         try:
-            mark_ai_error(engine, post_uid=post_uid, error=msg, next_retry_at=next_retry, archived_at=now_str())
+            mark_ai_error(
+                engine,
+                post_uid=post_uid,
+                error=msg,
+                next_retry_at=next_retry,
+                archived_at=now_str(),
+            )
         except Exception as mark_e:
             if config.verbose:
-                print(f"[llm] mark_error_failed {post_uid} {type(mark_e).__name__}: {mark_e}", flush=True)
+                print(
+                    f"[llm] mark_error_failed {post_uid} {type(mark_e).__name__}: {mark_e}",
+                    flush=True,
+                )
         print(f"[llm] error {post_uid} {msg}", flush=True)
 
 
-def _log_spool_and_redis(*, verbose: bool, spool_dir: Path, redis_client, redis_queue_key: str) -> None:
+def _log_spool_and_redis(
+    *, verbose: bool, spool_dir: Path, redis_client, redis_queue_key: str
+) -> None:
     if not verbose:
         return
     print(f"[spool] dir={spool_dir}", flush=True)
@@ -721,7 +848,10 @@ def _maybe_dispose_turso_engine_on_stream_not_found(
             print("[turso] disposed_engine reason=stream_not_found", flush=True)
     except Exception as dispose_e:
         if verbose:
-            print(f"[turso] dispose_engine_failed {type(dispose_e).__name__}: {dispose_e}", flush=True)
+            print(
+                f"[turso] dispose_engine_failed {type(dispose_e).__name__}: {dispose_e}",
+                flush=True,
+            )
 
 
 def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> bool:
@@ -732,13 +862,17 @@ def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> 
         print("[turso] ready", flush=True)
         return True
     except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
+        _maybe_dispose_turso_engine_on_stream_not_found(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
         if verbose:
             print(f"[turso] not_ready {type(e).__name__}: {e}", flush=True)
         return False
 
 
-def _seconds_until_next_active_start(now_dt: datetime, active_hours: tuple[int, int]) -> float:
+def _seconds_until_next_active_start(
+    now_dt: datetime, active_hours: tuple[int, int]
+) -> float:
     start_hour, end_hour = active_hours
     today_start = now_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
 
@@ -779,7 +913,9 @@ def _schedule_ai(
             limit=max(1, int(available) * 2),
         )
     except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
+        _maybe_dispose_turso_engine_on_stream_not_found(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
         if verbose:
             print(f"[ai] select_due_error {type(e).__name__}: {e}", flush=True)
         return 0, True
@@ -791,7 +927,9 @@ def _schedule_ai(
         try:
             ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
         except Exception as e:
-            _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
+            _maybe_dispose_turso_engine_on_stream_not_found(
+                engine=engine, err=e, verbose=bool(verbose)
+            )
             if verbose:
                 print(f"[ai] mark_running_error {type(e).__name__}: {e}", flush=True)
             return scheduled, True
@@ -833,7 +971,9 @@ def _run_turso_maintenance(
         )
         recovered += recover_done_without_processed_at(engine, verbose=bool(verbose))
     except Exception as e:
-        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
+        _maybe_dispose_turso_engine_on_stream_not_found(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
         turso_error = True
         if verbose:
             print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
@@ -898,7 +1038,9 @@ def main() -> None:
                 sleep_until_active(worker_active_hours, verbose=verbose)
 
             wakeup_event.clear()
-            inflight_futures.difference_update({f for f in inflight_futures if f.done()})
+            inflight_futures.difference_update(
+                {f for f in inflight_futures if f.done()}
+            )
 
             now = time.time()
             do_maintenance = bool(now >= maintenance_next_at)
@@ -911,9 +1053,13 @@ def main() -> None:
                 rss_skip_reason = "no_sources"
             else:
                 now_dt = datetime.now(CST)
-                if rss_active_hours is not None and not in_active_hours(now_dt, rss_active_hours):
+                if rss_active_hours is not None and not in_active_hours(
+                    now_dt, rss_active_hours
+                ):
                     rss_skip_reason = "inactive"
-                    rss_next_ingest_at = now + _seconds_until_next_active_start(now_dt, rss_active_hours)
+                    rss_next_ingest_at = now + _seconds_until_next_active_start(
+                        now_dt, rss_active_hours
+                    )
                 elif now < rss_next_ingest_at:
                     rss_skip_reason = "interval"
                 else:
@@ -922,7 +1068,9 @@ def main() -> None:
 
             force_maintenance = False
             if not turso_ready and now >= float(turso_next_ready_check_at):
-                turso_ready = _ensure_turso_ready(engine=engine, verbose=verbose, turso_ready=turso_ready)
+                turso_ready = _ensure_turso_ready(
+                    engine=engine, verbose=verbose, turso_ready=turso_ready
+                )
                 if turso_ready:
                     turso_next_ready_check_at = 0.0
                     # Turso just recovered: run maintenance ASAP to flush spool/redis quickly.
@@ -954,13 +1102,15 @@ def main() -> None:
             if (do_maintenance or force_maintenance) and active_engine is not None:
                 if force_maintenance:
                     maintenance_next_at = now + float(worker_interval)
-                recovered, flushed_redis, flushed_spool, maintenance_error = _run_turso_maintenance(
-                    engine=active_engine,
-                    spool_dir=spool_dir,
-                    redis_client=redis_client,
-                    redis_queue_key=redis_queue_key,
-                    stuck_seconds=int(args.ai_stuck_seconds),
-                    verbose=verbose,
+                recovered, flushed_redis, flushed_spool, maintenance_error = (
+                    _run_turso_maintenance(
+                        engine=active_engine,
+                        spool_dir=spool_dir,
+                        redis_client=redis_client,
+                        redis_queue_key=redis_queue_key,
+                        stuck_seconds=int(args.ai_stuck_seconds),
+                        verbose=verbose,
+                    )
                 )
 
             scheduled = 0
@@ -977,7 +1127,9 @@ def main() -> None:
                     verbose=verbose,
                 )
 
-            turso_error = bool(ingest_turso_error or maintenance_error or schedule_error)
+            turso_error = bool(
+                ingest_turso_error or maintenance_error or schedule_error
+            )
             if turso_error:
                 turso_ready = False
                 turso_next_ready_check_at = min(
@@ -993,10 +1145,16 @@ def main() -> None:
                 or flushed_spool > 0
             ):
                 next_maintenance_in = max(0.0, maintenance_next_at - time.time())
-                next_rss_in = -1.0 if rss_next_ingest_at == float("inf") else max(0.0, rss_next_ingest_at - time.time())
+                next_rss_in = (
+                    -1.0
+                    if rss_next_ingest_at == float("inf")
+                    else max(0.0, rss_next_ingest_at - time.time())
+                )
                 next_turso_in = -1.0
                 if not turso_ready:
-                    next_turso_in = max(0.0, float(turso_next_ready_check_at) - time.time())
+                    next_turso_in = max(
+                        0.0, float(turso_next_ready_check_at) - time.time()
+                    )
                 print(
                     f"[tick] turso_ready={1 if active_engine is not None else 0} "
                     f"inflight={len(inflight_futures)} ai_scheduled={scheduled} "

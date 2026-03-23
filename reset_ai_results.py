@@ -7,8 +7,6 @@ from sqlalchemy import text
 
 from alphavault.env import load_dotenv_if_present
 
-load_dotenv_if_present()
-
 from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
@@ -25,14 +23,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Reset AI queue state: set posts back to pending (assertions kept until worker overwrites)"
     )
-    parser.add_argument("--all", action="store_true", help="全量重置（不删 assertions，只把 posts 标记为待处理）")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="全量重置（不删 assertions，只把 posts 标记为待处理）",
+    )
     parser.add_argument(
         "--post-uids",
         type=str,
         default="",
         help="只重置这些 post_uid（逗号/换行分隔；纯数字会自动加 weibo:）",
     )
-    parser.add_argument("--yes", action="store_true", help="配合 --all 使用，确认你真的要全量重置")
+    parser.add_argument(
+        "--yes", action="store_true", help="配合 --all 使用，确认你真的要全量重置"
+    )
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--dry-run", action="store_true", help="只打印，不写 DB")
     parser.add_argument("--verbose", action="store_true")
@@ -70,6 +74,7 @@ def _select_existing_post_uids(engine, post_uids: list[str]) -> set[str]:
 
 
 def main() -> None:
+    load_dotenv_if_present()
     args = parse_args()
     if args.all and str(args.post_uids or "").strip():
         raise SystemExit("参数冲突：--all 和 --post-uids 只能选一个")
@@ -84,8 +89,12 @@ def main() -> None:
 
     if args.all:
         with turso_connect_autocommit(engine) as conn:
-            total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
-            total_assertions = int(conn.execute(text("SELECT COUNT(*) FROM assertions")).scalar() or 0)
+            total_posts = int(
+                conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
+            )
+            total_assertions = int(
+                conn.execute(text("SELECT COUNT(*) FROM assertions")).scalar() or 0
+            )
 
         print(
             f"[reset] plan all=1 posts={total_posts} assertions={total_assertions} keep_assertions=1 dry_run={int(bool(args.dry_run))}",
@@ -95,7 +104,10 @@ def main() -> None:
             return
 
         deleted, updated = reset_ai_results_all(engine, archived_at=archived_at)
-        print(f"[reset] done all=1 deleted_assertions={deleted} updated_posts={updated}", flush=True)
+        print(
+            f"[reset] done all=1 deleted_assertions={deleted} updated_posts={updated}",
+            flush=True,
+        )
         return
 
     post_uids = _parse_post_uids(args.post_uids)
@@ -129,7 +141,10 @@ def main() -> None:
         archived_at=archived_at,
         chunk_size=max(1, int(args.chunk_size)),
     )
-    print(f"[reset] done all=0 deleted_assertions={deleted} updated_posts={updated}", flush=True)
+    print(
+        f"[reset] done all=0 deleted_assertions={deleted} updated_posts={updated}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

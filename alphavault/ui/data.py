@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Streamlit data helpers.
 
@@ -8,6 +6,8 @@ This module does:
 - load from Turso
 - normalize/standardize DataFrame columns
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -36,7 +36,12 @@ def load_topic_cluster_sources(
     auth_token: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     if not db_url:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            f"Missing {ENV_TURSO_DATABASE_URL}",
+        )
     engine = ensure_turso_engine(db_url, auth_token)
     return try_load_cluster_tables(engine)
 
@@ -141,7 +146,9 @@ def action_group(action: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_turso_tables(
+    db_url: str, auth_token: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not db_url:
         raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
     engine = ensure_turso_engine(db_url, auth_token)
@@ -174,9 +181,13 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
             "author",
             "created_at",
         ]
-        selected_assertion_cols = [col for col in wanted_assertion_cols if col in assertion_cols]
+        selected_assertion_cols = [
+            col for col in wanted_assertion_cols if col in assertion_cols
+        ]
         if selected_assertion_cols:
-            assertions_query = f"SELECT {', '.join(selected_assertion_cols)} FROM assertions"
+            assertions_query = (
+                f"SELECT {', '.join(selected_assertion_cols)} FROM assertions"
+            )
         else:
             assertions_query = "SELECT * FROM assertions"
         posts = pd.read_sql_query(posts_query, conn)
@@ -261,11 +272,21 @@ def enrich_assertions(assertions: pd.DataFrame) -> pd.DataFrame:
     assertions["industries"] = assertions["industries_json"].apply(parse_json_list)
     assertions["commodities"] = assertions["commodities_json"].apply(parse_json_list)
     assertions["indices"] = assertions["indices_json"].apply(parse_json_list)
-    assertions["stock_codes_str"] = assertions["stock_codes"].apply(lambda items: ", ".join(items))
-    assertions["stock_names_str"] = assertions["stock_names"].apply(lambda items: ", ".join(items))
-    assertions["industries_str"] = assertions["industries"].apply(lambda items: ", ".join(items))
-    assertions["commodities_str"] = assertions["commodities"].apply(lambda items: ", ".join(items))
-    assertions["indices_str"] = assertions["indices"].apply(lambda items: ", ".join(items))
+    assertions["stock_codes_str"] = assertions["stock_codes"].apply(
+        lambda items: ", ".join(items)
+    )
+    assertions["stock_names_str"] = assertions["stock_names"].apply(
+        lambda items: ", ".join(items)
+    )
+    assertions["industries_str"] = assertions["industries"].apply(
+        lambda items: ", ".join(items)
+    )
+    assertions["commodities_str"] = assertions["commodities"].apply(
+        lambda items: ", ".join(items)
+    )
+    assertions["indices_str"] = assertions["indices"].apply(
+        lambda items: ", ".join(items)
+    )
 
     topic_parts = assertions["topic_key"].apply(split_topic_key)
     assertions["topic_type"] = topic_parts.apply(lambda item: item[0])
@@ -344,7 +365,9 @@ def standardize_assertions(
     else:
         missing_author = pd.Series([True] * len(assertions))
     if "created_at" in assertions.columns:
-        missing_created = assertions["created_at"].eq("") | assertions["created_at"].isna()
+        missing_created = (
+            assertions["created_at"].eq("") | assertions["created_at"].isna()
+        )
     else:
         missing_created = pd.Series([True] * len(assertions))
 
@@ -357,8 +380,12 @@ def standardize_assertions(
         status_map = posts.set_index("post_uid")["status"]
         score_map = posts.set_index("post_uid")["invest_score"]
 
-        assertions.loc[missing_author, "author"] = assertions.loc[missing_author, "post_uid"].map(author_map)
-        assertions.loc[missing_created, "created_at"] = assertions.loc[missing_created, "post_uid"].map(created_map)
+        assertions.loc[missing_author, "author"] = assertions.loc[
+            missing_author, "post_uid"
+        ].map(author_map)
+        assertions.loc[missing_created, "created_at"] = assertions.loc[
+            missing_created, "post_uid"
+        ].map(created_map)
         assertions["url"] = assertions["post_uid"].map(url_map)
         assertions["raw_text"] = assertions["post_uid"].map(raw_map)
         assertions["display_md"] = assertions["post_uid"].map(display_map)

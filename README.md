@@ -1,6 +1,6 @@
 # AlphaVault
 
-面向投资大佬观点追踪的采集与分析系统。  
+面向投资大佬观点追踪的采集与分析系统。
 当前支持：微博 RSS 抓取、LLM 投资相关性分析、断言抽取、写入 Turso 云端库、Streamlit 可视化。
 
 ## 功能概览
@@ -17,13 +17,24 @@
 
 ## 环境要求
 - Python 3.10+
+- uv（用来装依赖/启动）
 - 可用的 LLM 代理或 API
 
 ## 安装
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+uv sync
+```
+
+## 开发（pre-commit + tests）
+```bash
+# 1) 安装 hooks（提交前自动检查）
+uv run pre-commit install
+
+# 2) 手动跑一遍检查
+uv run pre-commit run -a
+
+# 3) 跑 tests
+uv run pytest
 ```
 
 ## Worker（RSS → Turso → AI）
@@ -48,7 +59,7 @@ export AI_RETRIES="11"
 export AI_MAX_INFLIGHT="30"
 export AI_TRACE_OUT="trace.txt"
 
-python3 weibo_rss_turso_worker.py --verbose
+uv run python weibo_rss_turso_worker.py --verbose
 ```
 
 说明：
@@ -59,7 +70,7 @@ python3 weibo_rss_turso_worker.py --verbose
 
 ## Streamlit 前端
 ```bash
-streamlit run streamlit_app.py
+uv run streamlit run streamlit_app.py
 ```
 
 需要：`TURSO_DATABASE_URL`（可选 `TURSO_AUTH_TOKEN`）。

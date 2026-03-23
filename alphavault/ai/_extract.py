@@ -81,7 +81,9 @@ def _extract_ai_text(response: Any, *, _seen_ids: Optional[set[int]] = None) -> 
             if isinstance(first_choice, dict):
                 message = first_choice.get("message")
                 if isinstance(message, dict):
-                    extracted_choice_text = _extract_text_from_response_content(message.get("content"))
+                    extracted_choice_text = _extract_text_from_response_content(
+                        message.get("content")
+                    )
                     if extracted_choice_text:
                         return extracted_choice_text
     return ""
@@ -139,4 +141,3 @@ def _collect_streamed_ai_text(stream_response: Any, *, api_mode: str) -> str:
         if chunk_text:
             return chunk_text
     return ""
-

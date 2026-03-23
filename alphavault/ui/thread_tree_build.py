@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Thread tree builder.
 
@@ -8,7 +6,9 @@ Input:
 - posts_all: full posts table (used to build complete trees)
 """
 
-from typing import Any, Dict
+from __future__ import annotations
+
+from typing import Any, Dict, cast
 
 import pandas as pd
 
@@ -24,7 +24,12 @@ from alphavault.ui.thread_tree_parse import (
     parse_display_md_segments,
     parse_weibo_csv_raw_fields,
 )
-from alphavault.ui.thread_tree_render import _format_ts, _render_ascii_tree, _short_text, _to_ts
+from alphavault.ui.thread_tree_render import (
+    _format_ts,
+    _render_ascii_tree,
+    _short_text,
+    _to_ts,
+)
 
 
 def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
@@ -36,7 +41,9 @@ def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
     return selected_ids
 
 
-def _collect_blogger_authors(selected_ids: set[str], *, nodes: dict[str, dict]) -> set[str]:
+def _collect_blogger_authors(
+    selected_ids: set[str], *, nodes: dict[str, dict]
+) -> set[str]:
     authors: set[str] = set()
     for post_id in selected_ids:
         node = nodes.get(str(post_id)) or {}
@@ -75,7 +82,9 @@ def _add_csv_parent_columns(posts: pd.DataFrame) -> pd.DataFrame:
     posts = posts.copy()
     posts["csv_fields"] = posts["raw_text"].apply(parse_weibo_csv_raw_fields)
     posts["parent_post_id"] = posts["csv_fields"].apply(
-        lambda item: extract_parent_post_id(csv_fields=item) if isinstance(item, dict) else ""
+        lambda item: extract_parent_post_id(csv_fields=item)
+        if isinstance(item, dict)
+        else ""
     )
     posts["parent_post_id"] = posts["parent_post_id"].apply(_clean_id)
     return posts
@@ -142,7 +151,9 @@ def _infer_parent_post_id(
 
     candidates = list(text_index.get(key, []))
     if author_hint:
-        candidates = [c for c in candidates if str(c.get("author") or "").strip() == author_hint]
+        candidates = [
+            c for c in candidates if str(c.get("author") or "").strip() == author_hint
+        ]
 
     if child_ts is not None:
         candidates = [
@@ -155,7 +166,7 @@ def _infer_parent_post_id(
 
     best = max(
         candidates,
-        key=lambda c: c.get("created_at") if c.get("created_at") is not None else pd.Timestamp.min,
+        key=lambda c: _to_ts(c.get("created_at")) or pd.Timestamp.min,
     )
     parent_id = _clean_id(best.get("post_id"))
     if not parent_id or parent_id == child_id:
@@ -167,7 +178,9 @@ def _infer_missing_parent_ids(posts: pd.DataFrame) -> pd.DataFrame:
     if posts.empty:
         return posts
 
-    posts_lookup: dict[str, dict] = posts.set_index("platform_post_id").to_dict(orient="index")
+    posts_lookup: dict[str, dict] = posts.set_index("platform_post_id").to_dict(
+        orient="index"
+    )
     text_index = _build_posts_text_index(posts_lookup) if posts_lookup else {}
     if not text_index:
         return posts
@@ -189,7 +202,9 @@ def _infer_missing_parent_ids(posts: pd.DataFrame) -> pd.DataFrame:
     return posts
 
 
-def _add_synthetic_sources(posts: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
+def _add_synthetic_sources(
+    posts: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
     # If a post quotes another speaker (display_md has multi segments), but we still
     # can't find parent_id, create a synthetic "source" parent so root is correct.
     synthetic_sources: dict[str, dict[str, str]] = {}
@@ -222,7 +237,9 @@ def _add_synthetic_sources(posts: pd.DataFrame) -> tuple[pd.DataFrame, dict[str,
     return posts, synthetic_sources
 
 
-def _attach_parent_info(posts: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
+def _attach_parent_info(
+    posts: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
     posts = _add_csv_parent_columns(posts)
     posts = _infer_missing_parent_ids(posts)
     return _add_synthetic_sources(posts)
@@ -242,9 +259,13 @@ def _build_assertions_by_post(view_df: pd.DataFrame) -> dict[str, list[dict]]:
         # Dedupe so the tree doesn't repeat the same assertion.
         deduped = deduped.drop_duplicates(subset=["post_uid", "idx"], keep="first")
     else:
-        deduped = deduped.drop_duplicates(subset=["post_uid", *assertion_cols], keep="first")
+        deduped = deduped.drop_duplicates(
+            subset=["post_uid", *assertion_cols], keep="first"
+        )
 
-    order_cols = [col for col in ["post_uid", "idx", "created_at"] if col in view_df.columns]
+    order_cols = [
+        col for col in ["post_uid", "idx", "created_at"] if col in view_df.columns
+    ]
     ordered = deduped.sort_values(by=order_cols, ascending=True)
 
     assertions_by_post: dict[str, list[dict]] = {}
@@ -278,7 +299,9 @@ def _build_nodes(
             "url": str(row.get("url") or "").strip(),
             "raw_text": str(row.get("raw_text") or ""),
             "display_md": str(row.get("display_md") or ""),
-            "csv_fields": row.get("csv_fields") if isinstance(row.get("csv_fields"), dict) else {},
+            "csv_fields": row.get("csv_fields")
+            if isinstance(row.get("csv_fields"), dict)
+            else {},
             "parent_post_id": parent_post_id,
             "assertions": assertions_by_post.get(post_uid, []),
             "missing": False,
@@ -316,7 +339,9 @@ def _weibo_url(user_id: object, bid: object) -> str:
 def _source_stub_from_child_csv(csv_fields: Dict[str, Any]) -> dict[str, object]:
     src_author = str(csv_fields.get("源用户昵称") or "").strip()
     src_text = str(csv_fields.get("源微博正文") or "").strip()
-    src_created = csv_fields.get("源微博完整日期") or csv_fields.get("源微博日期") or None
+    src_created = (
+        csv_fields.get("源微博完整日期") or csv_fields.get("源微博日期") or None
+    )
     src_url = _weibo_url(csv_fields.get("源用户id"), csv_fields.get("源微博bid"))
     return {
         "author": src_author,
@@ -337,10 +362,17 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
         if parent_id in nodes:
             continue
 
-        child_csv = node.get("csv_fields") if isinstance(node.get("csv_fields"), dict) else {}
+        raw_csv_fields = node.get("csv_fields")
+        child_csv: Dict[str, Any]
+        if isinstance(raw_csv_fields, dict):
+            child_csv = cast(Dict[str, Any], raw_csv_fields)
+        else:
+            child_csv = {}
         source_stub = _source_stub_from_child_csv(child_csv)
         child_display_md = str(node.get("display_md") or "").strip()
-        child_segments = parse_display_md_segments(child_display_md) if child_display_md else []
+        child_segments = (
+            parse_display_md_segments(child_display_md) if child_display_md else []
+        )
         fallback_source = child_segments[0] if child_segments else ""
         if fallback_source and not str(source_stub.get("raw_text") or "").strip():
             source_stub["raw_text"] = fallback_source
@@ -393,7 +425,9 @@ def _find_root_id(start_id: str, *, nodes: dict[str, dict]) -> str:
     return nid or _clean_id(start_id)
 
 
-def _collect_relevant_roots(selected_ids: set[str], *, nodes: dict[str, dict]) -> list[str]:
+def _collect_relevant_roots(
+    selected_ids: set[str], *, nodes: dict[str, dict]
+) -> list[str]:
     relevant_roots: list[str] = []
     seen_roots: set[str] = set()
     for sid in selected_ids:
@@ -419,7 +453,9 @@ def _subtree_ids(root_id: str, *, children: dict[str, list[str]]) -> set[str]:
     return subtree
 
 
-def _latest_activity(subtree: set[str], *, nodes: dict[str, dict]) -> pd.Timestamp | None:
+def _latest_activity(
+    subtree: set[str], *, nodes: dict[str, dict]
+) -> pd.Timestamp | None:
     latest: pd.Timestamp | None = None
     for nid in subtree:
         ts = _to_ts((nodes.get(nid) or {}).get("created_at"))
@@ -429,7 +465,9 @@ def _latest_activity(subtree: set[str], *, nodes: dict[str, dict]) -> pd.Timesta
     return latest
 
 
-def _thread_label(root_id: str, *, nodes: dict[str, dict], children: dict[str, list[str]]) -> str:
+def _thread_label(
+    root_id: str, *, nodes: dict[str, dict], children: dict[str, list[str]]
+) -> str:
     root_node = nodes.get(root_id) or {}
     label_node_id = root_id
     if bool(root_node.get("missing")):
@@ -468,7 +506,9 @@ def _build_thread(
     }
 
 
-def build_weibo_thread_forest(view_df: pd.DataFrame, *, posts_all: pd.DataFrame) -> list[dict]:
+def build_weibo_thread_forest(
+    view_df: pd.DataFrame, *, posts_all: pd.DataFrame
+) -> list[dict]:
     """
     Build parent-child thread forest for a selected topic/board.
 
@@ -490,7 +530,11 @@ def build_weibo_thread_forest(view_df: pd.DataFrame, *, posts_all: pd.DataFrame)
 
     posts, synthetic_sources = _attach_parent_info(posts)
     assertions_by_post = _build_assertions_by_post(view_df)
-    nodes = _build_nodes(posts, assertions_by_post=assertions_by_post, synthetic_sources=synthetic_sources)
+    nodes = _build_nodes(
+        posts,
+        assertions_by_post=assertions_by_post,
+        synthetic_sources=synthetic_sources,
+    )
     _ensure_parent_stubs(nodes)
     children = _build_children_map(nodes)
     blogger_authors = _collect_blogger_authors(selected_ids, nodes=nodes)
@@ -506,9 +550,7 @@ def build_weibo_thread_forest(view_df: pd.DataFrame, *, posts_all: pd.DataFrame)
         for root_id in roots
     ]
     threads.sort(
-        key=lambda item: item.get("latest_activity")
-        if item.get("latest_activity") is not None
-        else pd.Timestamp.min,
+        key=lambda item: _to_ts(item.get("latest_activity")) or pd.Timestamp.min,
         reverse=True,
     )
     return threads

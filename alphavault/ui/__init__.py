@@ -1,2 +1,1 @@
 """UI modules (Streamlit)."""
-

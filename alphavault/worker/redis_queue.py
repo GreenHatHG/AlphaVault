@@ -83,15 +83,16 @@ def redis_try_push_dedup(
         return False
 
 
-def _cloud_post_is_processed_or_newer(engine: Engine, post_uid: str, payload_ingested_at: int) -> bool:
+def _cloud_post_is_processed_or_newer(
+    engine: Engine, post_uid: str, payload_ingested_at: int
+) -> bool:
     with turso_connect_autocommit(engine) as conn:
-        row = (
-            conn.execute(
-                text("SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"),
-                {"post_uid": post_uid},
-            )
-            .fetchone()
-        )
+        row = conn.execute(
+            text(
+                "SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"
+            ),
+            {"post_uid": post_uid},
+        ).fetchone()
         if not row:
             return False
         processed_at = row[0]
@@ -104,7 +105,9 @@ def _cloud_post_is_processed_or_newer(engine: Engine, post_uid: str, payload_ing
         return int(existing_ingested_at) >= int(payload_ingested_at)
 
 
-def _redis_requeue_processing(client, queue_key: str, *, max_items: int, verbose: bool) -> int:
+def _redis_requeue_processing(
+    client, queue_key: str, *, max_items: int, verbose: bool
+) -> int:
     if max_items <= 0:
         return 0
     src = _redis_processing_key(queue_key)
@@ -184,7 +187,9 @@ def flush_redis_to_turso(
 
     # Avoid "stuck in processing": move a few items back each tick.
     try:
-        _redis_requeue_processing(client, queue_key, max_items=min(200, max_items), verbose=verbose)
+        _redis_requeue_processing(
+            client, queue_key, max_items=min(200, max_items), verbose=verbose
+        )
     except Exception as e:
         if verbose:
             print(f"[redis] requeue_error {type(e).__name__}: {e}", flush=True)
@@ -226,7 +231,9 @@ def flush_redis_to_turso(
             payload_ingested_at = 0
 
         try:
-            skip_upsert = _cloud_post_is_processed_or_newer(engine, post_uid, payload_ingested_at)
+            skip_upsert = _cloud_post_is_processed_or_newer(
+                engine, post_uid, payload_ingested_at
+            )
         except Exception as e:
             if verbose:
                 print(f"[redis] turso_check_error {type(e).__name__}: {e}", flush=True)

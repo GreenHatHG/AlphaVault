@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from alphavault.constants import (
     ENV_AI_API_KEY,
@@ -66,7 +66,9 @@ def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
 
     model = os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
     base_url = os.getenv(ENV_AI_BASE_URL, "").strip()
-    api_mode = os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    api_mode = (
+        os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    )
     if api_mode not in {AI_MODE_COMPLETION, AI_MODE_RESPONSES}:
         api_mode = DEFAULT_AI_MODE
 
@@ -125,7 +127,11 @@ def suggest_keywords_for_follow(
     examples = examples[:12]
     examples_text = "\n".join([f"- {x}" for x in examples])
 
-    effective_timeout_seconds = float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
+    effective_timeout_seconds = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else float(config.timeout_seconds)
+    )
     effective_timeout_seconds = max(1.0, effective_timeout_seconds)
 
     effective_retries = int(retries) if retries is not None else int(config.retries)
@@ -194,4 +200,3 @@ def suggest_keywords_for_follow(
 
 
 __all__ = ["suggest_keywords_for_follow"]
-

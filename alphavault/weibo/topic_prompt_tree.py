@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Build an AI-ready message_tree for a Weibo author thread.
 
@@ -10,8 +8,10 @@ Design notes:
 - Keep it conservative: hard limits (no extra configs) to avoid huge prompts.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from alphavault.ui.thread_tree_parse import (
     _content_key_for_compare,
@@ -47,7 +47,9 @@ def _truncate_text(text: str, *, max_chars: int) -> tuple[str, bool]:
 def _ensure_display_md(*, raw_text: str, display_md: str, author: str) -> str:
     if str(display_md or "").strip():
         return str(display_md or "")
-    return format_weibo_display_md(str(raw_text or ""), author=str(author or "").strip())
+    return format_weibo_display_md(
+        str(raw_text or ""), author=str(author or "").strip()
+    )
 
 
 def thread_root_info_for_post(
@@ -64,14 +66,20 @@ def thread_root_info_for_post(
     root_content_key: normalized compare key for skipping repeated roots.
     """
     resolved_author = str(author or "").strip()
-    md = _ensure_display_md(raw_text=raw_text, display_md=display_md, author=resolved_author)
+    md = _ensure_display_md(
+        raw_text=raw_text, display_md=display_md, author=resolved_author
+    )
     segments = parse_display_md_segments(md) if md.strip() else []
     if segments:
         root_segment = segments[0]
     else:
-        root_segment = f"{resolved_author}：{_to_one_line_text(str(raw_text or ''))}".strip("：")
+        root_segment = (
+            f"{resolved_author}：{_to_one_line_text(str(raw_text or ''))}".strip("：")
+        )
     root_key = _make_synthetic_source_id(root_segment) or "root"
-    root_content_key = _content_key_for_compare(root_segment, author_hint=_extract_speaker_name(root_segment))
+    root_content_key = _content_key_for_compare(
+        root_segment, author_hint=_extract_speaker_name(root_segment)
+    )
     return root_key, root_segment, root_content_key
 
 
@@ -123,7 +131,9 @@ def _serialize_tree(node: _TreeNode) -> dict[str, Any]:
 def _insert_path(tree_root: _TreeNode, path_payloads: list[dict[str, Any]]) -> None:
     current = tree_root
     for payload in path_payloads:
-        key = _node_key(str(payload.get("source_kind") or ""), str(payload.get("source_id") or ""))
+        key = _node_key(
+            str(payload.get("source_kind") or ""), str(payload.get("source_id") or "")
+        )
         if not key.strip(":"):
             continue
         existing = current.children.get(key)
@@ -169,7 +179,9 @@ def build_topic_runtime_context(
         segments = parse_display_md_segments(md) if md.strip() else []
         if len(segments) != 1:
             continue
-        seg_key = _content_key_for_compare(segments[0], author_hint=_extract_speaker_name(segments[0]))
+        seg_key = _content_key_for_compare(
+            segments[0], author_hint=_extract_speaker_name(segments[0])
+        )
         if seg_key and seg_key == root_content_key:
             if root_post_row is None:
                 root_post_row = row
@@ -180,7 +192,9 @@ def build_topic_runtime_context(
                 root_post_row = row
 
     if root_post_row is not None:
-        root_source_id = str(root_post_row.get("platform_post_id") or "").strip() or root_source_id
+        root_source_id = (
+            str(root_post_row.get("platform_post_id") or "").strip() or root_source_id
+        )
         root_created_at = str(root_post_row.get("created_at") or "").strip()
         root_speaker = str(root_post_row.get("author") or "").strip() or root_speaker
         md = _ensure_display_md(
@@ -190,7 +204,10 @@ def build_topic_runtime_context(
         )
         segments = parse_display_md_segments(md) if md.strip() else []
         if segments:
-            root_text = _strip_leading_speaker(segments[-1], author_hint=root_speaker) or root_text
+            root_text = (
+                _strip_leading_speaker(segments[-1], author_hint=root_speaker)
+                or root_text
+            )
 
     root_text, root_truncated = _truncate_text(root_text, max_chars=max_node_text_chars)
     root_node = _TreeNode(
@@ -227,7 +244,9 @@ def build_topic_runtime_context(
 
         last_seg = segments[-1]
         leaf_text = _strip_leading_speaker(last_seg, author_hint=author) or ""
-        leaf_text, leaf_truncated = _truncate_text(leaf_text, max_chars=max_node_text_chars)
+        leaf_text, leaf_truncated = _truncate_text(
+            leaf_text, max_chars=max_node_text_chars
+        )
         if leaf_truncated:
             truncated_nodes += 1
 
@@ -241,7 +260,10 @@ def build_topic_runtime_context(
 
         virtual_segments = segments[:-1] if include_virtual_comments else []
         if virtual_segments and root_content_key:
-            first_key = _content_key_for_compare(virtual_segments[0], author_hint=_extract_speaker_name(virtual_segments[0]))
+            first_key = _content_key_for_compare(
+                virtual_segments[0],
+                author_hint=_extract_speaker_name(virtual_segments[0]),
+            )
             if first_key and first_key == root_content_key:
                 virtual_segments = virtual_segments[1:]
 
@@ -255,7 +277,9 @@ def build_topic_runtime_context(
                 continue
 
             node_text = _strip_leading_speaker(seg, author_hint=speaker) or ""
-            node_text, node_truncated = _truncate_text(node_text, max_chars=max_node_text_chars)
+            node_text, node_truncated = _truncate_text(
+                node_text, max_chars=max_node_text_chars
+            )
             if node_truncated:
                 truncated_nodes += 1
 
@@ -288,7 +312,9 @@ def build_topic_runtime_context(
     return runtime_context, truncated_nodes
 
 
-def build_message_lookup_from_tree(message_tree: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+def build_message_lookup_from_tree(
+    message_tree: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
     """
     Build a lookup for validating/mapping evidence_refs.
 

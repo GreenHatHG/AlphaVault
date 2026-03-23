@@ -17,7 +17,6 @@ import requests
 
 from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
 from alphavault.constants import DATETIME_FMT
-from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
 # It keeps only RSS parsing + small helpers, so the worker can delete the old route.
@@ -115,7 +114,16 @@ def parse_datetime(entry: feedparser.FeedParserDict) -> str:
     for key in ("published_parsed", "updated_parsed", "created_parsed"):
         parsed = getattr(entry, key, None)
         if parsed:
-            dt = datetime(*parsed[:6], tzinfo=timezone.utc).astimezone(CST)
+            year, month, day, hour, minute, second = parsed[:6]
+            dt = datetime(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                tzinfo=timezone.utc,
+            ).astimezone(CST)
             return dt.strftime(DATETIME_FMT)
     return now_str()
 
@@ -206,7 +214,9 @@ def build_ids(
     return "", "", ""
 
 
-def choose_author(entry: feedparser.FeedParserDict, feed: feedparser.FeedParserDict, fallback: str) -> str:
+def choose_author(
+    entry: feedparser.FeedParserDict, feed: feedparser.FeedParserDict, fallback: str
+) -> str:
     author = entry.get("author") or feed.feed.get("author") or feed.feed.get("title")
     author = (author or "").strip()
     if author:

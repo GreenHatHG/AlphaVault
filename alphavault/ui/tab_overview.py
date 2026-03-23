@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Streamlit tab: overview.
 """
+
+from __future__ import annotations
 
 import math
 
@@ -15,7 +15,9 @@ def show_kpis(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame) -
     relevant_posts = int((posts_filtered["status"] == "relevant").sum())
     error_posts = int((posts_filtered["status"] == "error").sum())
     total_assertions = len(assertions_filtered)
-    avg_conf = float(assertions_filtered["confidence"].mean()) if total_assertions > 0 else 0.0
+    avg_conf = (
+        float(assertions_filtered["confidence"].mean()) if total_assertions > 0 else 0.0
+    )
     if posts_filtered.empty:
         repost_ratio = 0.0
     else:
@@ -79,7 +81,9 @@ def show_overview_charts(
         else:
             assertions_daily = pd.Series(dtype=float)
 
-        timeline = pd.DataFrame({"posts": posts_daily, "assertions": assertions_daily}).fillna(0)
+        timeline = pd.DataFrame(
+            {"posts": posts_daily, "assertions": assertions_daily}
+        ).fillna(0)
 
         if timeline.empty:
             st.write("暂无时间序列数据。")

@@ -13,17 +13,30 @@ from alphavault.rss.utils import (
     choose_author,
     fetch_feed,
     get_entry_content,
-    html_to_text,
     infer_user_id_from_rss_url,
     now_str,
     parse_datetime,
 )
-from alphavault.weibo.display import extract_image_urls_from_html, format_weibo_display_md
-from alphavault.worker.redis_queue import DEFAULT_REDIS_DEDUP_TTL_SECONDS, redis_try_push_dedup
+from alphavault.text.html import html_to_text
+from alphavault.weibo.display import (
+    extract_image_urls_from_html,
+    format_weibo_display_md,
+)
+from alphavault.worker.redis_queue import (
+    DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+    redis_try_push_dedup,
+)
 from alphavault.worker.spool import spool_delete, spool_write
 
 
-def _try_push_to_redis(redis_client, redis_queue_key: str, *, post_uid: str, payload: Dict[str, Any], verbose: bool) -> bool:
+def _try_push_to_redis(
+    redis_client,
+    redis_queue_key: str,
+    *,
+    post_uid: str,
+    payload: Dict[str, Any],
+    verbose: bool,
+) -> bool:
     if not redis_client or not redis_queue_key or not post_uid:
         return False
     return redis_try_push_dedup(
@@ -63,7 +76,10 @@ def ingest_rss_many_once(
                 entries = entries[:limit]
         except Exception as e:
             if verbose:
-                print(f"[rss] source_error url={rss_url} {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[rss] source_error url={rss_url} {type(e).__name__}: {e}",
+                    flush=True,
+                )
             continue
 
         for entry in entries:
@@ -95,7 +111,9 @@ def ingest_rss_many_once(
 
             created_at = parse_datetime(entry)
             resolved_author = choose_author(entry, feed, author)
-            display_md = format_weibo_display_md(raw_text, author=resolved_author, image_urls=image_urls)
+            display_md = format_weibo_display_md(
+                raw_text, author=resolved_author, image_urls=image_urls
+            )
 
             payload: Dict[str, Any] = {
                 "post_uid": post_uid,
@@ -112,7 +130,10 @@ def ingest_rss_many_once(
             try:
                 spool_write(spool_dir, post_uid, payload)
             except Exception as e:
-                print(f"[spool] write_error {post_uid} {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[spool] write_error {post_uid} {type(e).__name__}: {e}",
+                    flush=True,
+                )
 
             if engine is None:
                 _try_push_to_redis(
@@ -152,7 +173,10 @@ def ingest_rss_many_once(
                     verbose=bool(verbose),
                 )
                 if verbose:
-                    print(f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e}", flush=True)
+                    print(
+                        f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e}",
+                        flush=True,
+                    )
 
             seen_post_uids.add(post_uid)
             seen_urls.add(link)

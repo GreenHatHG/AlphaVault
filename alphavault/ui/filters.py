@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """
 Streamlit sidebar filters.
 
 Keep: build_filters(posts, assertions) -> (posts_filtered, assertions_filtered, meta)
 """
+
+from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
@@ -89,7 +89,9 @@ ASSERTIONS_COALESCE_COLS = [
 ]
 
 
-def _ensure_required_columns(df: pd.DataFrame, required: dict[str, object]) -> pd.DataFrame:
+def _ensure_required_columns(
+    df: pd.DataFrame, required: dict[str, object]
+) -> pd.DataFrame:
     out = df.copy()
     for col, default in required.items():
         if col not in out.columns:
@@ -150,7 +152,9 @@ def _safe_date_bounds(posts: pd.DataFrame, *, date_col: str) -> tuple[date, date
     return min_date, max_date
 
 
-def _sidebar_date_range(posts: pd.DataFrame, *, date_col: str) -> tuple[date, date, datetime, datetime]:
+def _sidebar_date_range(
+    posts: pd.DataFrame, *, date_col: str
+) -> tuple[date, date, datetime, datetime]:
     min_date, max_date = _safe_date_bounds(posts, date_col=date_col)
     default_start = max(min_date, max_date - timedelta(days=DEFAULT_DATE_RANGE_DAYS))
     selected_range = st.sidebar.date_input(
@@ -170,13 +174,17 @@ def _sidebar_date_range(posts: pd.DataFrame, *, date_col: str) -> tuple[date, da
     return start_date, end_date, start_dt, end_dt
 
 
-def _filter_posts_by_date(posts: pd.DataFrame, *, date_col: str, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+def _filter_posts_by_date(
+    posts: pd.DataFrame, *, date_col: str, start_dt: datetime, end_dt: datetime
+) -> pd.DataFrame:
     if date_col not in posts.columns:
         return posts
     return posts[(posts[date_col] >= start_dt) & (posts[date_col] <= end_dt)]
 
 
-def _sidebar_filter_posts_sources(posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_posts_sources(
+    posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame
+) -> pd.DataFrame:
     source_options = (
         sorted(posts_all["source"].dropna().unique().tolist())
         if "source" in posts_all.columns
@@ -184,13 +192,17 @@ def _sidebar_filter_posts_sources(posts_filtered: pd.DataFrame, *, posts_all: pd
     )
     if not source_options:
         return posts_filtered
-    selected_sources = st.sidebar.multiselect("来源", source_options, default=source_options)
+    selected_sources = st.sidebar.multiselect(
+        "来源", source_options, default=source_options
+    )
     if not selected_sources:
         return posts_filtered
     return posts_filtered[posts_filtered["source"].isin(selected_sources)]
 
 
-def _sidebar_filter_posts_platforms(posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_posts_platforms(
+    posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame
+) -> pd.DataFrame:
     platform_options = (
         sorted(posts_all["platform"].dropna().unique().tolist())
         if "platform" in posts_all.columns
@@ -204,7 +216,9 @@ def _sidebar_filter_posts_platforms(posts_filtered: pd.DataFrame, *, posts_all: 
     return posts_filtered[posts_filtered["platform"].isin(selected_platforms)]
 
 
-def _sidebar_filter_posts_status(posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_posts_status(
+    posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame
+) -> pd.DataFrame:
     status_options: list = []
     if "status" in posts_all.columns:
         status_options = sorted(posts_all["status"].dropna().unique().tolist())
@@ -212,13 +226,17 @@ def _sidebar_filter_posts_status(posts_filtered: pd.DataFrame, *, posts_all: pd.
         status_options = sorted(posts_filtered["status"].dropna().unique().tolist())
 
     default_status = ["relevant"] if "relevant" in status_options else status_options
-    selected_status = st.sidebar.multiselect("状态", status_options, default=default_status)
+    selected_status = st.sidebar.multiselect(
+        "状态", status_options, default=default_status
+    )
     if not selected_status:
         return posts_filtered
     return posts_filtered[posts_filtered["status"].isin(selected_status)]
 
 
-def _sidebar_filter_posts_authors(posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_posts_authors(
+    posts_filtered: pd.DataFrame, *, posts_all: pd.DataFrame
+) -> pd.DataFrame:
     if "author" in posts_all.columns:
         series = posts_all["author"]
     elif "author" in posts_filtered.columns:
@@ -237,13 +255,17 @@ def _sidebar_filter_posts_authors(posts_filtered: pd.DataFrame, *, posts_all: pd
         selected_authors = st.sidebar.multiselect("作者", author_options, default=None)
     else:
         st.sidebar.caption("提示：作者很多，建议先搜索。")
-        search = st.sidebar.text_input("搜索作者", value="", key="filter_author_search").strip()
+        search = st.sidebar.text_input(
+            "搜索作者", value="", key="filter_author_search"
+        ).strip()
         if not search:
             return posts_filtered
         if search:
             mask = s.str.contains(search, case=False, na=False, regex=False)
             candidates = s[mask].drop_duplicates().head(MAX_FILTER_MATCHES).tolist()
-            st.sidebar.caption(f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）")
+            st.sidebar.caption(
+                f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）"
+            )
 
         selected_authors = st.sidebar.multiselect(
             "作者",
@@ -261,7 +283,9 @@ def _sidebar_keyword_filter(posts_filtered: pd.DataFrame) -> tuple[pd.DataFrame,
     keyword = st.sidebar.text_input("关键词 / 片段", value="").strip()
     if not keyword:
         return posts_filtered, ""
-    out = posts_filtered[posts_filtered["raw_text"].str.contains(keyword, case=False, na=False)]
+    out = posts_filtered[
+        posts_filtered["raw_text"].str.contains(keyword, case=False, na=False)
+    ]
     return out, keyword
 
 
@@ -274,8 +298,12 @@ def _sidebar_exclude_reposts(posts_filtered: pd.DataFrame) -> pd.DataFrame:
     return posts_filtered[~posts_filtered["repost_flag"]]
 
 
-def _join_assertions_with_posts(assertions: pd.DataFrame, *, posts_filtered: pd.DataFrame) -> pd.DataFrame:
-    join_cols = [col for col in ASSERTIONS_JOIN_POST_COLS if col in posts_filtered.columns]
+def _join_assertions_with_posts(
+    assertions: pd.DataFrame, *, posts_filtered: pd.DataFrame
+) -> pd.DataFrame:
+    join_cols = [
+        col for col in ASSERTIONS_JOIN_POST_COLS if col in posts_filtered.columns
+    ]
     if "post_uid" not in join_cols:
         join_cols = ["post_uid"] + join_cols
     return assertions.merge(posts_filtered[join_cols], on="post_uid", how="inner")
@@ -294,7 +322,10 @@ def _explode_clusters_for_grouping(assertions_joined: pd.DataFrame) -> pd.DataFr
     """
     if assertions_joined.empty:
         return assertions_joined
-    if "cluster_keys" not in assertions_joined.columns and "cluster_displays" not in assertions_joined.columns:
+    if (
+        "cluster_keys" not in assertions_joined.columns
+        and "cluster_displays" not in assertions_joined.columns
+    ):
         return assertions_joined
 
     def _pairs_for_row(row: pd.Series) -> list[tuple[str, str]]:
@@ -320,10 +351,14 @@ def _explode_clusters_for_grouping(assertions_joined: pd.DataFrame) -> pd.DataFr
     out["__cluster_pair"] = out.apply(_pairs_for_row, axis=1)
     out = out.explode("__cluster_pair", ignore_index=True)
     out["cluster_key"] = out["__cluster_pair"].apply(
-        lambda item: str(item[0] or "").strip() if isinstance(item, tuple) and len(item) >= 2 else ""
+        lambda item: str(item[0] or "").strip()
+        if isinstance(item, tuple) and len(item) >= 2
+        else ""
     )
     out["cluster_display"] = out["__cluster_pair"].apply(
-        lambda item: str(item[1] or "").strip() if isinstance(item, tuple) and len(item) >= 2 else ""
+        lambda item: str(item[1] or "").strip()
+        if isinstance(item, tuple) and len(item) >= 2
+        else ""
     )
     out["cluster_display"] = out["cluster_display"].where(
         out["cluster_display"].str.strip().ne(""), UNCATEGORIZED_LABEL
@@ -388,7 +423,10 @@ def _build_stock_name_by_code(assertions_joined: pd.DataFrame) -> dict[str, str]
     """
     if assertions_joined.empty:
         return {}
-    if "stock_codes" not in assertions_joined.columns or "stock_names" not in assertions_joined.columns:
+    if (
+        "stock_codes" not in assertions_joined.columns
+        or "stock_names" not in assertions_joined.columns
+    ):
         return {}
 
     counts: dict[str, dict[str, int]] = {}
@@ -413,7 +451,9 @@ def _build_stock_name_by_code(assertions_joined: pd.DataFrame) -> dict[str, str]
     out: dict[str, str] = {}
     for code, name_counts in counts.items():
         # pick the most frequent name; stable tiebreak by name string.
-        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][0]
+        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][
+            0
+        ]
         out[str(code).strip()] = str(best).strip()
     return out
 
@@ -439,7 +479,10 @@ def _group_key_list_for_row(
 
     if mode == GROUP_MODE_STOCK:
         codes = _match_values(match_keys, prefix="stock:")
-        labels = [_format_stock_label(code, stock_name_by_code=stock_name_by_code) for code in codes]
+        labels = [
+            _format_stock_label(code, stock_name_by_code=stock_name_by_code)
+            for code in codes
+        ]
         labels = [x for x in labels if x]
         return labels if labels else [UNTAGGED_LABEL]
 
@@ -461,7 +504,9 @@ def _group_key_list_for_row(
     return [UNTAGGED_LABEL]
 
 
-def _explode_group_key_list(assertions_joined: pd.DataFrame, *, list_col: str) -> pd.DataFrame:
+def _explode_group_key_list(
+    assertions_joined: pd.DataFrame, *, list_col: str
+) -> pd.DataFrame:
     """
     Explode a list column into row-level group_key.
     Keep exactly 1 row even if list is empty (use UNTAGGED_LABEL).
@@ -476,12 +521,16 @@ def _explode_group_key_list(assertions_joined: pd.DataFrame, *, list_col: str) -
     out[list_col] = out[list_col].apply(lambda v: v if v else [UNTAGGED_LABEL])
     out = out.explode(list_col, ignore_index=True)
     out["group_key"] = out[list_col].apply(lambda x: str(x or "").strip())
-    out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNTAGGED_LABEL)
+    out["group_key"] = out["group_key"].where(
+        out["group_key"].str.strip().ne(""), UNTAGGED_LABEL
+    )
     out = out.drop(columns=[list_col])
     return out
 
 
-def _apply_group_mode(assertions_joined: pd.DataFrame, *, group_mode: str) -> pd.DataFrame:
+def _apply_group_mode(
+    assertions_joined: pd.DataFrame, *, group_mode: str
+) -> pd.DataFrame:
     mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
     out = assertions_joined.copy()
 
@@ -490,7 +539,9 @@ def _apply_group_mode(assertions_joined: pd.DataFrame, *, group_mode: str) -> pd
             out["group_key"] = out["topic_key"].astype(str).str.strip()
         else:
             out["group_key"] = ""
-        out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNTAGGED_LABEL)
+        out["group_key"] = out["group_key"].where(
+            out["group_key"].str.strip().ne(""), UNTAGGED_LABEL
+        )
         return out
 
     if mode == GROUP_MODE_CLUSTER:
@@ -499,7 +550,9 @@ def _apply_group_mode(assertions_joined: pd.DataFrame, *, group_mode: str) -> pd
             out["group_key"] = out["cluster_display"].astype(str).str.strip()
         else:
             out["group_key"] = UNCATEGORIZED_LABEL
-        out["group_key"] = out["group_key"].where(out["group_key"].str.strip().ne(""), UNCATEGORIZED_LABEL)
+        out["group_key"] = out["group_key"].where(
+            out["group_key"].str.strip().ne(""), UNCATEGORIZED_LABEL
+        )
         return out
 
     # Coverage modes: use match_keys (generated in ui.data.enrich_assertions).
@@ -527,14 +580,23 @@ def _sidebar_filter_uncategorized(
 ) -> tuple[pd.DataFrame, bool]:
     mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
     if mode == GROUP_MODE_CLUSTER:
-        show = st.sidebar.checkbox("显示未归类", value=True, key="filter_show_uncategorized_cluster")
+        show = st.sidebar.checkbox(
+            "显示未归类", value=True, key="filter_show_uncategorized_cluster"
+        )
         if show or "group_key" not in assertions_joined.columns:
             return assertions_joined, show
         out = assertions_joined[assertions_joined["group_key"] != UNCATEGORIZED_LABEL]
         return out, show
 
-    if mode in {GROUP_MODE_STOCK, GROUP_MODE_INDUSTRY, GROUP_MODE_COMMODITY, GROUP_MODE_INDEX}:
-        show = st.sidebar.checkbox("显示未标注", value=False, key=f"filter_show_untagged:{mode}")
+    if mode in {
+        GROUP_MODE_STOCK,
+        GROUP_MODE_INDUSTRY,
+        GROUP_MODE_COMMODITY,
+        GROUP_MODE_INDEX,
+    }:
+        show = st.sidebar.checkbox(
+            "显示未标注", value=False, key=f"filter_show_untagged:{mode}"
+        )
         if show or "group_key" not in assertions_joined.columns:
             return assertions_joined, show
         out = assertions_joined[assertions_joined["group_key"] != UNTAGGED_LABEL]
@@ -562,7 +624,16 @@ def _sidebar_filter_groups(
     mode = str(group_mode or "").strip() or GROUP_MODE_TOPIC
     if mode == GROUP_MODE_CLUSTER and not show_uncategorized:
         s = s[s.ne(UNCATEGORIZED_LABEL)]
-    if mode in {GROUP_MODE_STOCK, GROUP_MODE_INDUSTRY, GROUP_MODE_COMMODITY, GROUP_MODE_INDEX} and not show_uncategorized:
+    if (
+        mode
+        in {
+            GROUP_MODE_STOCK,
+            GROUP_MODE_INDUSTRY,
+            GROUP_MODE_COMMODITY,
+            GROUP_MODE_INDEX,
+        }
+        and not show_uncategorized
+    ):
         s = s[s.ne(UNTAGGED_LABEL)]
     if s.empty:
         return assertions_joined
@@ -570,7 +641,9 @@ def _sidebar_filter_groups(
     unique_count = int(s.nunique())
     if unique_count <= MAX_FILTER_OPTIONS:
         group_options = sorted(s.unique().tolist())
-        selected_groups = st.sidebar.multiselect(group_label, group_options, default=None)
+        selected_groups = st.sidebar.multiselect(
+            group_label, group_options, default=None
+        )
     else:
         st.sidebar.caption(f"提示：{group_label} 很多，建议先搜索。")
         search = st.sidebar.text_input(
@@ -583,7 +656,9 @@ def _sidebar_filter_groups(
         if search:
             mask = s.str.contains(search, case=False, na=False, regex=False)
             candidates = s[mask].drop_duplicates().head(MAX_FILTER_MATCHES).tolist()
-            st.sidebar.caption(f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）")
+            st.sidebar.caption(
+                f"搜索命中 {len(candidates)} 个（最多 {MAX_FILTER_MATCHES} 个）"
+            )
 
         selected_groups = st.sidebar.multiselect(
             group_label,
@@ -597,7 +672,9 @@ def _sidebar_filter_groups(
     return assertions_joined[assertions_joined[group_col].isin(selected_groups)]
 
 
-def _sidebar_filter_actions(assertions_joined: pd.DataFrame, *, assertions_all: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_actions(
+    assertions_joined: pd.DataFrame, *, assertions_all: pd.DataFrame
+) -> pd.DataFrame:
     action_options = (
         sorted(assertions_all["action"].dropna().unique().tolist())
         if "action" in assertions_all.columns
@@ -609,7 +686,9 @@ def _sidebar_filter_actions(assertions_joined: pd.DataFrame, *, assertions_all: 
     return assertions_joined[assertions_joined["action"].isin(selected_actions)]
 
 
-def _sidebar_filter_strength_and_confidence(assertions_joined: pd.DataFrame) -> pd.DataFrame:
+def _sidebar_filter_strength_and_confidence(
+    assertions_joined: pd.DataFrame,
+) -> pd.DataFrame:
     strength_range = st.sidebar.slider("动作强度", 0, 3, (0, 3), step=1)
     assertions_joined = assertions_joined[
         (assertions_joined["action_strength"] >= strength_range[0])
@@ -646,10 +725,16 @@ def _filter_posts_sidebar(
 ) -> tuple[pd.DataFrame, str, date, date, str]:
     posts_filtered = _ensure_required_columns(posts, REQUIRED_POST_COLS)
     date_col = _pick_date_col(posts_filtered)
-    start_date, end_date, start_dt, end_dt = _sidebar_date_range(posts_filtered, date_col=date_col)
-    posts_filtered = _filter_posts_by_date(posts_filtered, date_col=date_col, start_dt=start_dt, end_dt=end_dt)
+    start_date, end_date, start_dt, end_dt = _sidebar_date_range(
+        posts_filtered, date_col=date_col
+    )
+    posts_filtered = _filter_posts_by_date(
+        posts_filtered, date_col=date_col, start_dt=start_dt, end_dt=end_dt
+    )
     posts_filtered = _sidebar_filter_posts_sources(posts_filtered, posts_all=posts_all)
-    posts_filtered = _sidebar_filter_posts_platforms(posts_filtered, posts_all=posts_all)
+    posts_filtered = _sidebar_filter_posts_platforms(
+        posts_filtered, posts_all=posts_all
+    )
     posts_filtered = _sidebar_filter_posts_status(posts_filtered, posts_all=posts_all)
     posts_filtered = _sidebar_filter_posts_authors(posts_filtered, posts_all=posts_all)
     posts_filtered, keyword = _sidebar_keyword_filter(posts_filtered)
@@ -666,8 +751,12 @@ def _filter_assertions_sidebar(
     group_label: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
     assertions_all = _ensure_required_columns(assertions, REQUIRED_ASSERT_COLS)
-    assertions_joined = _join_assertions_with_posts(assertions_all, posts_filtered=posts_filtered)
-    assertions_joined = _coalesce_joined_cols(assertions_joined, cols=ASSERTIONS_COALESCE_COLS)
+    assertions_joined = _join_assertions_with_posts(
+        assertions_all, posts_filtered=posts_filtered
+    )
+    assertions_joined = _coalesce_joined_cols(
+        assertions_joined, cols=ASSERTIONS_COALESCE_COLS
+    )
     assertions_joined = _apply_group_mode(assertions_joined, group_mode=group_mode)
     assertions_joined, show_uncategorized = _sidebar_filter_uncategorized(
         assertions_joined,
@@ -681,7 +770,9 @@ def _filter_assertions_sidebar(
         group_mode=group_mode,
         show_uncategorized=show_uncategorized,
     )
-    assertions_joined = _sidebar_filter_actions(assertions_joined, assertions_all=assertions_all)
+    assertions_joined = _sidebar_filter_actions(
+        assertions_joined, assertions_all=assertions_all
+    )
     assertions_joined = _sidebar_filter_strength_and_confidence(assertions_joined)
     posts_filtered, only_with_assertions = _sidebar_only_with_assertions(
         posts_filtered=posts_filtered,
@@ -697,13 +788,17 @@ def build_filters(
     st.sidebar.header("筛选条件")
 
     group_mode, group_col, group_label = _sidebar_grouping_config(assertions)
-    posts_filtered, date_col, start_date, end_date, keyword = _filter_posts_sidebar(posts, posts_all=posts)
-    assertions_joined, posts_filtered, only_with_assertions = _filter_assertions_sidebar(
-        assertions,
-        posts_filtered=posts_filtered,
-        group_mode=group_mode,
-        group_col=group_col,
-        group_label=group_label,
+    posts_filtered, date_col, start_date, end_date, keyword = _filter_posts_sidebar(
+        posts, posts_all=posts
+    )
+    assertions_joined, posts_filtered, only_with_assertions = (
+        _filter_assertions_sidebar(
+            assertions,
+            posts_filtered=posts_filtered,
+            group_mode=group_mode,
+            group_col=group_col,
+            group_label=group_label,
+        )
     )
 
     meta = {

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Thread tree parsing helpers.
 
@@ -8,6 +6,8 @@ Keep this module focused on:
 - parsing repost/quote info from raw_text/display_md
 - parsing the JSON object after '[CSV原始字段]'
 """
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -31,13 +31,6 @@ def strip_csv_raw_fields(raw_text: str) -> str:
     if idx < 0:
         return text.strip()
     return text[:idx].strip()
-
-
-def _normalize_for_match(text: str) -> str:
-    s = strip_csv_raw_fields(html_to_text(str(text or "")))
-    s = s.replace("\u00a0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
 
 
 def _first_non_empty_line(text: str) -> str:
@@ -271,4 +264,3 @@ __all__ = [
     "parse_weibo_csv_raw_fields",
     "strip_csv_raw_fields",
 ]
-

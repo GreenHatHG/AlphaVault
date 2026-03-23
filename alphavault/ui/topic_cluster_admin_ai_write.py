@@ -4,7 +4,10 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.engine import Engine
 
-from alphavault.topic_cluster import ensure_cluster_schema, upsert_cluster_topics_detailed
+from alphavault.topic_cluster import (
+    ensure_cluster_schema,
+    upsert_cluster_topics_detailed,
+)
 from alphavault.ui.topic_cluster_admin_helpers import (
     _format_basic_topic,
     _parse_confidence,
@@ -30,30 +33,42 @@ def _render_ai_write_section(
         return
 
     existing_in_cluster: set[str] = set()
-    if not topic_map.empty and "topic_key" in topic_map.columns and "cluster_key" in topic_map.columns:
+    if (
+        not topic_map.empty
+        and "topic_key" in topic_map.columns
+        and "cluster_key" in topic_map.columns
+    ):
         df = topic_map[["topic_key", "cluster_key"]].dropna().copy()
         df["topic_key"] = df["topic_key"].astype(str).str.strip()
         df["cluster_key"] = df["cluster_key"].astype(str).str.strip()
-        existing_in_cluster = set(df.loc[df["cluster_key"] == selected_cluster, "topic_key"].tolist())
+        existing_in_cluster = set(
+            df.loc[df["cluster_key"] == selected_cluster, "topic_key"].tolist()
+        )
 
     include_conf_by_topic: dict[str, float] = {}
     for item in include_items:
         key = str(item.get("key") or item.get("topic_key") or "").strip()
         if key:
-            include_conf_by_topic[key] = _parse_confidence(item.get("confidence", None), 0.8)
+            include_conf_by_topic[key] = _parse_confidence(
+                item.get("confidence", None), 0.8
+            )
 
     unsure_conf_by_topic: dict[str, float] = {}
     for item in unsure_items:
         key = str(item.get("key") or item.get("topic_key") or "").strip()
         if key and key not in include_conf_by_topic:
-            unsure_conf_by_topic[key] = _parse_confidence(item.get("confidence", None), 0.55)
+            unsure_conf_by_topic[key] = _parse_confidence(
+                item.get("confidence", None), 0.55
+            )
 
     include_keys_raw = [
         str(item.get("key") or item.get("topic_key") or "").strip()
         for item in include_items
         if str(item.get("key") or item.get("topic_key") or "").strip()
     ]
-    include_keys = sorted(set([k for k in include_keys_raw if k and k not in existing_in_cluster]))
+    include_keys = sorted(
+        set([k for k in include_keys_raw if k and k not in existing_in_cluster])
+    )
     include_keys = _sort_by_count(include_keys, count_by_topic=count_by_topic)
 
     unsure_keys_raw = [
@@ -77,7 +92,9 @@ def _render_ai_write_section(
         "选择要加入本板块的 key",
         options=include_keys,
         default=include_keys,
-        format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
+        format_func=lambda k: _format_basic_topic(
+            str(k), count_by_topic=count_by_topic
+        ),
         key=f"cluster_ai_write_include:{selected_cluster}",
     )
 
@@ -86,7 +103,9 @@ def _render_ai_write_section(
         "选择要加入（unsure）的 key",
         options=unsure_keys,
         default=[],
-        format_func=lambda k: _format_basic_topic(str(k), count_by_topic=count_by_topic),
+        format_func=lambda k: _format_basic_topic(
+            str(k), count_by_topic=count_by_topic
+        ),
         key=f"cluster_ai_write_unsure:{selected_cluster}",
     )
 
@@ -109,7 +128,9 @@ def _render_ai_write_section(
             if conf is None:
                 conf = unsure_conf_by_topic.get(key, 0.75)
             # Note: DB column name stays "topic_key", but we store the generic member key.
-            payloads.append({"topic_key": key, "source": "ai", "confidence": float(conf)})
+            payloads.append(
+                {"topic_key": key, "source": "ai", "confidence": float(conf)}
+            )
         n = upsert_cluster_topics_detailed(
             engine,
             cluster_key=selected_cluster,

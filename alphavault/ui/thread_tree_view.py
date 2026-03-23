@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 Thread tree rendering (Streamlit UI).
 
 Input is the output of build_weibo_thread_forest(...).
 This module only renders UI; it does not parse data.
 """
+
+from __future__ import annotations
 
 import math
 

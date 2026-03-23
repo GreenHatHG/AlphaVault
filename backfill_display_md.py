@@ -8,9 +8,11 @@ from sqlalchemy import text
 
 from alphavault.env import load_dotenv_if_present
 
-load_dotenv_if_present()
-
-from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit, turso_savepoint
+from alphavault.db.turso_db import (
+    get_turso_engine_from_env,
+    turso_connect_autocommit,
+    turso_savepoint,
+)
 from alphavault.db.turso_queue import ensure_cloud_queue_schema
 from alphavault.weibo.display import format_weibo_display_md
 
@@ -19,11 +21,17 @@ DEFAULT_BATCH_SIZE = 200
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Backfill posts.display_md from posts.raw_text")
+    parser = argparse.ArgumentParser(
+        description="Backfill posts.display_md from posts.raw_text"
+    )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少条（0=不限）")
-    parser.add_argument("--sleep-sec", type=float, default=0.0, help="每批之间 sleep 秒数（默认 0）")
-    parser.add_argument("--overwrite", action="store_true", help="覆盖已有 display_md（默认只补空的）")
+    parser.add_argument(
+        "--sleep-sec", type=float, default=0.0, help="每批之间 sleep 秒数（默认 0）"
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="覆盖已有 display_md（默认只补空的）"
+    )
     parser.add_argument(
         "--post-uids",
         type=str,
@@ -105,6 +113,7 @@ def _max_target_post_uid(conn, *, overwrite: bool) -> str:
             """
     return str(conn.execute(text(query)).scalar() or "").strip()
 
+
 def _parse_post_uids(value: str) -> list[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -181,15 +190,27 @@ def _update_batch(conn, *, updates: list[dict], overwrite: bool) -> int:
     return updated
 
 
-def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry_run: bool, sleep_sec: float, verbose: bool) -> None:
+def _backfill_by_post_uids(
+    engine,
+    *,
+    post_uids: list[str],
+    batch_size: int,
+    dry_run: bool,
+    sleep_sec: float,
+    verbose: bool,
+) -> None:
     processed = 0
     updated = 0
     found_uids: set[str] = set()
 
     with turso_connect_autocommit(engine) as conn:
-        total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
+        total_posts = int(
+            conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
+        )
 
-    print(f"[backfill] start total_posts={total_posts} target={len(post_uids)} overwrite=True by_post_uids=True")
+    print(
+        f"[backfill] start total_posts={total_posts} target={len(post_uids)} overwrite=True by_post_uids=True"
+    )
 
     for chunk in _chunks(post_uids, batch_size):
         with turso_connect_autocommit(engine) as conn:
@@ -205,9 +226,13 @@ def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry
 
         with turso_connect_autocommit(engine) as conn:
             with turso_savepoint(conn):
-                updated_this_batch = _update_batch(conn, updates=updates, overwrite=True)
+                updated_this_batch = _update_batch(
+                    conn, updates=updates, overwrite=True
+                )
         updated += updated_this_batch
-        print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
+        print(
+            f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}"
+        )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
@@ -218,24 +243,41 @@ def _backfill_by_post_uids(engine, *, post_uids: list[str], batch_size: int, dry
         tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
         print(f"[backfill] missing_post_uids={len(missing)} {head}{tail}")
 
-    print(f"[backfill] done updated={updated} processed={processed} target={len(post_uids)}")
+    print(
+        f"[backfill] done updated={updated} processed={processed} target={len(post_uids)}"
+    )
 
 
-def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, overwrite: bool, dry_run: bool, verbose: bool) -> None:
+def _backfill_scan(
+    engine,
+    *,
+    batch_size: int,
+    limit: int,
+    sleep_sec: float,
+    overwrite: bool,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
     processed = 0
     updated = 0
     last_post_uid = ""
 
     with turso_connect_autocommit(engine) as conn:
-        total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
+        total_posts = int(
+            conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
+        )
         target_total = _count_targets(conn, overwrite=bool(overwrite))
         stop_post_uid = _max_target_post_uid(conn, overwrite=bool(overwrite))
 
     if not stop_post_uid or target_total <= 0:
-        print(f"[backfill] nothing_to_do total_posts={total_posts} target={target_total}")
+        print(
+            f"[backfill] nothing_to_do total_posts={total_posts} target={target_total}"
+        )
         return
 
-    print(f"[backfill] start total_posts={total_posts} target={target_total} overwrite={bool(overwrite)}")
+    print(
+        f"[backfill] start total_posts={total_posts} target={target_total} overwrite={bool(overwrite)}"
+    )
 
     while True:
         remaining = None
@@ -270,9 +312,13 @@ def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, ove
         else:
             with turso_connect_autocommit(engine) as conn:
                 with turso_savepoint(conn):
-                    updated_this_batch = _update_batch(conn, updates=updates, overwrite=bool(overwrite))
+                    updated_this_batch = _update_batch(
+                        conn, updates=updates, overwrite=bool(overwrite)
+                    )
             updated += updated_this_batch
-            print(f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}")
+            print(
+                f"[backfill] batch updated={updated_this_batch} total_updated={updated} total_processed={processed}"
+            )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
@@ -281,6 +327,7 @@ def _backfill_scan(engine, *, batch_size: int, limit: int, sleep_sec: float, ove
 
 
 def main() -> None:
+    load_dotenv_if_present()
     args = parse_args()
     engine = get_turso_engine_from_env()
 

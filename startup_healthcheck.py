@@ -4,7 +4,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -16,7 +15,11 @@ from alphavault.constants import (
     ENV_TURSO_AUTH_TOKEN,
     ENV_TURSO_DATABASE_URL,
 )
-from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit, turso_savepoint
+from alphavault.db.turso_db import (
+    ensure_turso_engine,
+    turso_connect_autocommit,
+    turso_savepoint,
+)
 from alphavault.env import load_dotenv_if_present
 
 load_dotenv_if_present()
@@ -99,10 +102,14 @@ def _check_turso() -> None:
             )
             with turso_savepoint(conn):
                 conn.execute(
-                    text(f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"),
+                    text(
+                        f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"
+                    ),
                     {"ts": int(time.time()), "note": note},
                 )
-                inserted_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
+                inserted_id = conn.execute(
+                    text("SELECT last_insert_rowid()")
+                ).scalar_one()
                 conn.execute(
                     text(f"DELETE FROM {HEALTHCHECK_TABLE} WHERE id = :id"),
                     {"id": int(inserted_id)},

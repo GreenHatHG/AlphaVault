@@ -8,8 +8,6 @@ from pathlib import Path
 
 from alphavault.env import load_dotenv_if_present
 
-load_dotenv_if_present()
-
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
@@ -48,7 +46,9 @@ def parse_args() -> argparse.Namespace:
     ai_rpm_env = env_float(ENV_AI_RPM)
     ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
 
-    parser = argparse.ArgumentParser(description="Manual run AI for specific post_uid(s)")
+    parser = argparse.ArgumentParser(
+        description="Manual run AI for specific post_uid(s)"
+    )
     parser.add_argument(
         "--post-uids",
         type=str,
@@ -63,18 +63,27 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv(ENV_AI_BASE_URL, "").strip(),
         help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
     )
-    parser.add_argument("--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）")
+    parser.add_argument(
+        "--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）"
+    )
     parser.add_argument(
         "--api-mode",
         default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
     )
-    parser.add_argument("--ai-stream", action="store_true", help="可选：打开 stream（默认按环境变量）")
-    parser.add_argument("--prompt-version", default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION))
+    parser.add_argument(
+        "--ai-stream", action="store_true", help="可选：打开 stream（默认按环境变量）"
+    )
+    parser.add_argument(
+        "--prompt-version",
+        default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION),
+    )
     parser.add_argument(
         "--ai-retries",
         type=int,
-        default=ai_retries_env if ai_retries_env is not None else DEFAULT_AI_RETRY_COUNT,
+        default=ai_retries_env
+        if ai_retries_env is not None
+        else DEFAULT_AI_RETRY_COUNT,
     )
     parser.add_argument(
         "--ai-temperature",
@@ -98,7 +107,9 @@ def parse_args() -> argparse.Namespace:
         default=ai_timeout_env if ai_timeout_env is not None else 1000.0,
     )
     parser.add_argument("--trace-out", type=Path, default=None)
-    parser.add_argument("--relevant-threshold", type=float, default=DEFAULT_RELEVANT_THRESHOLD)
+    parser.add_argument(
+        "--relevant-threshold", type=float, default=DEFAULT_RELEVANT_THRESHOLD
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -153,7 +164,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         ai_stream=ai_stream,
         ai_retries=max(0, int(args.ai_retries)),
         ai_temperature=float(args.ai_temperature),
-        ai_reasoning_effort=str(args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT),
+        ai_reasoning_effort=str(
+            args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
+        ),
         ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
         ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
         trace_out=trace_out,
@@ -162,6 +175,7 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
 
 
 def main() -> None:
+    load_dotenv_if_present()
     args = parse_args()
     post_uids = _parse_post_uids(args.post_uids)
     if not post_uids:
@@ -180,15 +194,26 @@ def main() -> None:
             marked = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
         except Exception as e:
             skipped += 1
-            print(f"[manual] skip post_uid={post_uid} mark_running_error={type(e).__name__}", flush=True)
+            print(
+                f"[manual] skip post_uid={post_uid} mark_running_error={type(e).__name__}",
+                flush=True,
+            )
             continue
         if not marked:
             skipped += 1
-            print(f"[manual] skip post_uid={post_uid} reason=not_due_or_processed", flush=True)
+            print(
+                f"[manual] skip post_uid={post_uid} reason=not_due_or_processed",
+                flush=True,
+            )
             continue
 
-        print(f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}", flush=True)
-        _process_one_post_uid(engine=engine, post_uid=post_uid, config=config, limiter=limiter)
+        print(
+            f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}",
+            flush=True,
+        )
+        _process_one_post_uid(
+            engine=engine, post_uid=post_uid, config=config, limiter=limiter
+        )
         ok += 1
 
     print(f"[manual] done ok={ok} skipped={skipped}", flush=True)

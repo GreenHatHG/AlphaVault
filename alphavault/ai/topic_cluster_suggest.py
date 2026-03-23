@@ -66,7 +66,9 @@ def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
 
     model = os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
     base_url = os.getenv(ENV_AI_BASE_URL, "").strip()
-    api_mode = os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    api_mode = (
+        os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    )
     if api_mode not in {AI_MODE_COMPLETION, AI_MODE_RESPONSES}:
         api_mode = DEFAULT_AI_MODE
 
@@ -154,7 +156,9 @@ def suggest_keys_for_cluster(
         raise RuntimeError(err or "ai_not_configured")
 
     effective_timeout_seconds = (
-        float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else float(config.timeout_seconds)
     )
     effective_timeout_seconds = max(1.0, effective_timeout_seconds)
 

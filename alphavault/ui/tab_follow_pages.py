@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Streamlit tab: follow pages (topic / cluster).
 
@@ -8,6 +6,8 @@ User flow:
 2) Keywords OR (optional)
 3) Render thread tree (reuse existing tree builder)
 """
+
+from __future__ import annotations
 
 import re
 
@@ -90,7 +90,10 @@ def _format_page_label(clusters: pd.DataFrame, row: pd.Series) -> str:
 def _build_stock_name_by_code(assertions_filtered: pd.DataFrame) -> dict[str, str]:
     if assertions_filtered.empty:
         return {}
-    if "stock_codes" not in assertions_filtered.columns or "stock_names" not in assertions_filtered.columns:
+    if (
+        "stock_codes" not in assertions_filtered.columns
+        or "stock_names" not in assertions_filtered.columns
+    ):
         return {}
     counts: dict[str, dict[str, int]] = {}
     for codes, names in zip(
@@ -113,7 +116,9 @@ def _build_stock_name_by_code(assertions_filtered: pd.DataFrame) -> dict[str, st
 
     out: dict[str, str] = {}
     for code, name_counts in counts.items():
-        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][0]
+        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][
+            0
+        ]
         out[str(code).strip()] = str(best).strip()
     return out
 
@@ -164,7 +169,11 @@ def _key_candidates(assertions_filtered: pd.DataFrame) -> pd.Series:
 
 def _select_follow_key(assertions_filtered: pd.DataFrame, *, key_prefix: str) -> str:
     st.caption("提示：key 可能很多，建议先搜索。")
-    search = st.text_input("搜索 key（个股/行业/商品/指数/主题...）", value="", key=f"{key_prefix}:key_search").strip()
+    search = st.text_input(
+        "搜索 key（个股/行业/商品/指数/主题...）",
+        value="",
+        key=f"{key_prefix}:key_search",
+    ).strip()
 
     counts = _key_candidates(assertions_filtered)
     if counts.empty:
@@ -209,7 +218,10 @@ def _select_follow_key(assertions_filtered: pd.DataFrame, *, key_prefix: str) ->
     return str(selected or "").strip()
 
 
-def _select_cluster_key(clusters: pd.DataFrame, assertions_filtered: pd.DataFrame, *, key_prefix: str) -> str:
+def _select_cluster_key(
+    clusters: pd.DataFrame, assertions_filtered: pd.DataFrame, *, key_prefix: str
+) -> str:
+    options: list[str] = []
     if not clusters.empty and "cluster_key" in clusters.columns:
         options = sorted(
             [
@@ -220,7 +232,6 @@ def _select_cluster_key(clusters: pd.DataFrame, assertions_filtered: pd.DataFram
         )
     else:
         # Fallback: from assertions (only non-empty keys).
-        options: list[str] = []
         if "cluster_key" in assertions_filtered.columns:
             options = sorted(
                 [
@@ -255,14 +266,19 @@ def _select_cluster_key(clusters: pd.DataFrame, assertions_filtered: pd.DataFram
     return str(selected or "").strip()
 
 
-def _build_keyword_post_uids(assertions_filtered: pd.DataFrame, *, keywords_text: str) -> set[str]:
+def _build_keyword_post_uids(
+    assertions_filtered: pd.DataFrame, *, keywords_text: str
+) -> set[str]:
     words = split_keywords_or(keywords_text)
     if not words:
         return set()
     escaped = [re.escape(w) for w in words]
     pattern = "|".join(escaped)
 
-    if "post_uid" not in assertions_filtered.columns or "raw_text" not in assertions_filtered.columns:
+    if (
+        "post_uid" not in assertions_filtered.columns
+        or "raw_text" not in assertions_filtered.columns
+    ):
         return set()
 
     post_text = assertions_filtered[["post_uid", "raw_text"]].copy()
@@ -270,7 +286,11 @@ def _build_keyword_post_uids(assertions_filtered: pd.DataFrame, *, keywords_text
     post_text = post_text[post_text["post_uid"].ne("")]
     post_text = post_text.drop_duplicates(subset=["post_uid"], keep="first")
 
-    mask = post_text["raw_text"].astype(str).str.contains(pattern, case=False, na=False, regex=True)
+    mask = (
+        post_text["raw_text"]
+        .astype(str)
+        .str.contains(pattern, case=False, na=False, regex=True)
+    )
     return set(post_text.loc[mask, "post_uid"].tolist())
 
 
@@ -285,18 +305,26 @@ def _render_page_create(
         follow_type_label = st.radio(
             "关注类型",
             options=[FOLLOW_TYPE_TOPIC, FOLLOW_TYPE_CLUSTER],
-            format_func=lambda x: "key（个股/行业/商品/指数/主题）" if x == FOLLOW_TYPE_TOPIC else "板块（聚合）",
+            format_func=lambda x: "key（个股/行业/商品/指数/主题）"
+            if x == FOLLOW_TYPE_TOPIC
+            else "板块（聚合）",
             horizontal=True,
         )
 
         if follow_type_label == FOLLOW_TYPE_CLUSTER:
-            follow_key = _select_cluster_key(clusters, assertions_filtered, key_prefix="follow_pages_create")
+            follow_key = _select_cluster_key(
+                clusters, assertions_filtered, key_prefix="follow_pages_create"
+            )
         else:
-            follow_key = _select_follow_key(assertions_filtered, key_prefix="follow_pages_create")
+            follow_key = _select_follow_key(
+                assertions_filtered, key_prefix="follow_pages_create"
+            )
 
         page_name = st.text_input("页面名字（可空）", value="")
 
-        keywords_widget_key = f"follow_pages_create_keywords:{follow_type_label}:{follow_key}"
+        keywords_widget_key = (
+            f"follow_pages_create_keywords:{follow_type_label}:{follow_key}"
+        )
         keywords_text = st.text_area(
             "关键字（多个，OR；可空）",
             value="",
@@ -359,7 +387,9 @@ def _render_page_update(
             code = k[len("stock:") :].strip()
             if code:
                 out.append(code)
-                out.append(code.replace(".SH", "").replace(".SZ", "").replace(".HK", ""))
+                out.append(
+                    code.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
+                )
             name = str(stock_name_by_code.get(code, "") or "").strip()
             if name:
                 out.append(name)
@@ -400,13 +430,19 @@ def _render_page_update(
                         continue
                     keys = [str(x).strip() for x in item if str(x).strip()]
                     mask.append(want in keys)
-                view = assertions_filtered[pd.Series(mask, index=assertions_filtered.index)]
+                view = assertions_filtered[
+                    pd.Series(mask, index=assertions_filtered.index)
+                ]
             elif "topic_key" in assertions_filtered.columns:
-                view = assertions_filtered[assertions_filtered["topic_key"].astype(str).str.strip() == want]
+                view = assertions_filtered[
+                    assertions_filtered["topic_key"].astype(str).str.strip() == want
+                ]
             else:
                 view = assertions_filtered.head(0).copy()
 
-        post_text = view.get("raw_text", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        post_text = (
+            view.get("raw_text", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        )
         out: list[str] = []
         seen: set[str] = set()
         for t in post_text:
@@ -421,14 +457,22 @@ def _render_page_update(
 
     col_a, col_b = st.columns([1, 1])
     with col_a:
-        if st.button("填默认关键字", type="secondary", key=f"follow_pages_seed_keywords:{page_key}"):
+        if st.button(
+            "填默认关键字",
+            type="secondary",
+            key=f"follow_pages_seed_keywords:{page_key}",
+        ):
             seed = _seed_keywords()
             if seed:
                 st.session_state[widget_key] = "\n".join(seed)
                 st.rerun()
             st.info("没有默认关键字。")
     with col_b:
-        if st.button("AI 推荐关键字", type="secondary", key=f"follow_pages_ai_keywords:{page_key}"):
+        if st.button(
+            "AI 推荐关键字",
+            type="secondary",
+            key=f"follow_pages_ai_keywords:{page_key}",
+        ):
             ok, err = ai_is_configured()
             if not ok:
                 st.info(f"AI 没配好：{err}")
@@ -511,7 +555,9 @@ def show_follow_pages(
     st.divider()
     if pages_df.empty:
         st.info("还没有关注页。先新建一个。")
-        _render_page_create(engine, clusters=clusters, assertions_filtered=assertions_filtered)
+        _render_page_create(
+            engine, clusters=clusters, assertions_filtered=assertions_filtered
+        )
         return
 
     pages_df = pages_df.copy()
@@ -572,9 +618,15 @@ def show_follow_pages(
     col_left, col_right = st.columns([2, 1])
     with col_left:
         with st.expander("新建关注页"):
-            _render_page_create(engine, clusters=clusters, assertions_filtered=assertions_filtered)
+            _render_page_create(
+                engine, clusters=clusters, assertions_filtered=assertions_filtered
+            )
     with col_right:
-        confirm = st.checkbox("我确认要删除", value=False, key=f"follow_pages_delete_confirm:{selected_page_key}")
+        confirm = st.checkbox(
+            "我确认要删除",
+            value=False,
+            key=f"follow_pages_delete_confirm:{selected_page_key}",
+        )
         if st.button(
             "删除这个关注页",
             type="secondary",
@@ -615,7 +667,9 @@ def show_follow_pages(
                         continue
                     keys = [str(x).strip() for x in item if str(x).strip()]
                     mask.append(want in keys)
-                base_view = assertions_filtered[pd.Series(mask, index=assertions_filtered.index)]
+                base_view = assertions_filtered[
+                    pd.Series(mask, index=assertions_filtered.index)
+                ]
             else:
                 base_view = assertions_filtered.head(0).copy()
         else:
@@ -632,9 +686,13 @@ def show_follow_pages(
                     continue
                 keys = [str(x).strip() for x in item if str(x).strip()]
                 mask.append(want in keys)
-            base_view = assertions_filtered[pd.Series(mask, index=assertions_filtered.index)]
+            base_view = assertions_filtered[
+                pd.Series(mask, index=assertions_filtered.index)
+            ]
         elif "topic_key" in assertions_filtered.columns:
-            base_view = assertions_filtered[assertions_filtered["topic_key"].astype(str).str.strip() == want]
+            base_view = assertions_filtered[
+                assertions_filtered["topic_key"].astype(str).str.strip() == want
+            ]
         else:
             base_view = assertions_filtered.head(0).copy()
 
@@ -643,7 +701,9 @@ def show_follow_pages(
         for x in base_view.get("post_uid", pd.Series(dtype=str)).dropna().tolist()
         if str(x).strip()
     )
-    keyword_post_uids = _build_keyword_post_uids(assertions_filtered, keywords_text=str(keywords_text or ""))
+    keyword_post_uids = _build_keyword_post_uids(
+        assertions_filtered, keywords_text=str(keywords_text or "")
+    )
     merged_uids = base_post_uids | keyword_post_uids
 
     st.caption(
@@ -654,7 +714,9 @@ def show_follow_pages(
         st.info("暂无数据。")
         return
 
-    view_df = assertions_filtered[assertions_filtered["post_uid"].astype(str).str.strip().isin(merged_uids)]
+    view_df = assertions_filtered[
+        assertions_filtered["post_uid"].astype(str).str.strip().isin(merged_uids)
+    ]
     threads_all = build_weibo_thread_forest(view_df, posts_all=posts_all)
     render_thread_forest(
         threads_all,

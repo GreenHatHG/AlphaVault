@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """HTML -> text helpers (keep it light: stdlib only)."""
+
+from __future__ import annotations
 
 import html as _html
 import re
@@ -26,4 +26,3 @@ def html_to_text(value: Optional[str]) -> str:
     text = text.replace("\r\n", "\n").strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text
-

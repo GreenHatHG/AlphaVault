@@ -46,7 +46,11 @@ def is_turso_stream_not_found_error(err: BaseException) -> bool:
         if isinstance(orig, BaseException) and orig is not current:
             current = orig
             continue
-        current = current.__cause__ if isinstance(current.__cause__, BaseException) else current.__context__
+        current = (
+            current.__cause__
+            if isinstance(current.__cause__, BaseException)
+            else current.__context__
+        )
         if not isinstance(current, BaseException):
             current = None
     return False
@@ -63,7 +67,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
       SQLAlchemy's default SQLite isolation_level setter.
     """
     dialect = getattr(engine, "dialect", None)
-    if dialect is not None and not getattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False):
+    if dialect is not None and not getattr(
+        dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False
+    ):
         original_do_rollback = getattr(dialect, "do_rollback", None)
         original_set_isolation_level = getattr(dialect, "set_isolation_level", None)
 
@@ -118,7 +124,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
             dialect.do_rollback = _patched_do_rollback  # type: ignore[assignment]
         setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
 
-    return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
+    return engine.connect().execution_options(
+        isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL
+    )
 
 
 @contextmanager
@@ -152,13 +160,19 @@ def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Conne
 
 def _topic_cluster_topics_pk_cols(conn) -> list[str]:
     try:
-        rows = conn.execute(text(f"PRAGMA table_info({TOPIC_CLUSTER_TOPICS_TABLE})")).mappings().all()
+        rows = (
+            conn.execute(text(f"PRAGMA table_info({TOPIC_CLUSTER_TOPICS_TABLE})"))
+            .mappings()
+            .all()
+        )
     except Exception:
         return []
     if not rows:
         return []
     ordered = sorted(rows, key=lambda r: int(r.get("pk") or 0))
-    cols = [str(r.get("name") or "").strip() for r in ordered if int(r.get("pk") or 0) > 0]
+    cols = [
+        str(r.get("name") or "").strip() for r in ordered if int(r.get("pk") or 0) > 0
+    ]
     return [c for c in cols if c]
 
 
@@ -204,7 +218,9 @@ def _migrate_topic_cluster_topics_to_v2(conn) -> None:
 
     old_n = int(
         (
-            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_TABLE}"))
+            conn.execute(
+                text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_TABLE}")
+            )
             .mappings()
             .first()
             or {}
@@ -213,7 +229,9 @@ def _migrate_topic_cluster_topics_to_v2(conn) -> None:
     )
     new_n = int(
         (
-            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_V2_TABLE}"))
+            conn.execute(
+                text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_V2_TABLE}")
+            )
             .mappings()
             .first()
             or {}

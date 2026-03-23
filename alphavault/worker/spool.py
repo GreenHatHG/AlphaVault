@@ -67,7 +67,9 @@ def flush_spool_to_turso(
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
             if verbose:
-                print(f"[spool] bad_file {path.name} {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[spool] bad_file {path.name} {type(e).__name__}: {e}", flush=True
+                )
             path.unlink(missing_ok=True)
             continue
 
@@ -97,7 +99,10 @@ def flush_spool_to_turso(
             )
         except Exception as e:
             if verbose:
-                print(f"[spool] turso_write_error {path.name} {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[spool] turso_write_error {path.name} {type(e).__name__}: {e}",
+                    flush=True,
+                )
             return processed, True
 
         try:

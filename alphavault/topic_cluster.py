@@ -31,7 +31,9 @@ def ensure_cluster_schema(engine: Engine) -> None:
     init_topic_cluster_schema(engine)
 
 
-def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+def try_load_cluster_tables(
+    engine: Engine,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Best-effort load cluster tables.
 
@@ -85,7 +87,9 @@ def build_cluster_maps(
             member_key = str(row.get("topic_key") or "").strip()
             cluster_key = str(row.get("cluster_key") or "").strip()
             if member_key and cluster_key:
-                cluster_keys_by_member_key.setdefault(member_key, []).append(cluster_key)
+                cluster_keys_by_member_key.setdefault(member_key, []).append(
+                    cluster_key
+                )
     if cluster_keys_by_member_key:
         for member_key, keys in list(cluster_keys_by_member_key.items()):
             # keep unique + stable (sorted) for deterministic UI.
@@ -136,7 +140,9 @@ def enrich_assertions_with_clusters(
         match_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
     post_uids = out.get("post_uid", pd.Series([""] * len(out), index=out.index))
 
-    def _cluster_keys_for_keys_and_post(keys_value: object, post_uid: object) -> list[str]:
+    def _cluster_keys_for_keys_and_post(
+        keys_value: object, post_uid: object
+    ) -> list[str]:
         keys_out: list[str] = []
         if isinstance(keys_value, list):
             for item in keys_value:
@@ -165,7 +171,9 @@ def enrich_assertions_with_clusters(
 
     out["cluster_keys"] = [
         _cluster_keys_for_keys_and_post(keys_value, post_uid)
-        for keys_value, post_uid in zip(match_keys.tolist(), post_uids.tolist(), strict=False)
+        for keys_value, post_uid in zip(
+            match_keys.tolist(), post_uids.tolist(), strict=False
+        )
     ]
 
     def _displays_for_keys(keys: object) -> list[str]:
@@ -324,7 +332,9 @@ def upsert_cluster_topics_detailed(
     return len(payloads)
 
 
-def delete_cluster_topics(engine: Engine, *, cluster_key: str, topic_keys: Iterable[str]) -> int:
+def delete_cluster_topics(
+    engine: Engine, *, cluster_key: str, topic_keys: Iterable[str]
+) -> int:
     items = [str(item or "").strip() for item in topic_keys]
     items = [item for item in items if item]
     if not items:
@@ -360,15 +370,21 @@ def delete_cluster(engine: Engine, *, cluster_key: str) -> dict[str, int]:
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
             res_topics = conn.execute(
-                text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"),
+                text(
+                    f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"
+                ),
                 {"cluster_key": key},
             )
             res_overrides = conn.execute(
-                text(f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"),
+                text(
+                    f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"
+                ),
                 {"cluster_key": key},
             )
             res_clusters = conn.execute(
-                text(f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"),
+                text(
+                    f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"
+                ),
                 {"cluster_key": key},
             )
 

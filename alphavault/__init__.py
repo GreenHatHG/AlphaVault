@@ -1,2 +1,1 @@
 """AlphaVault package."""
-

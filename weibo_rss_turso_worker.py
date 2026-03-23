@@ -10,11 +10,13 @@ Design goals:
 from __future__ import annotations
 
 from alphavault.env import load_dotenv_if_present
+from alphavault.worker.worker import main
 
-load_dotenv_if_present()
 
-from alphavault.worker.worker import main  # noqa: E402
+def _main() -> None:
+    load_dotenv_if_present()
+    main()
 
 
 if __name__ == "__main__":
-    main()
+    _main()

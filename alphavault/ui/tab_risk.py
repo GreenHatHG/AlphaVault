@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Streamlit tab: risk radar.
 """
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 import math
@@ -11,7 +11,9 @@ import pandas as pd
 import streamlit as st
 
 
-def show_risk_radar(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+def show_risk_radar(
+    assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str
+) -> None:
     group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
     st.markdown("**风险雷达（时间衰减评分）**")
 

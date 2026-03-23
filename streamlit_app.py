@@ -101,7 +101,11 @@ def main() -> None:
     selected_page_pre = str(st.session_state.get("main_page") or pages[0])
     group_mode_pre = str(st.session_state.get("filter_group_mode") or "").strip()
     legacy_group_by_cluster = bool(st.session_state.get("filter_group_by_cluster"))
-    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"} or group_mode_pre == "cluster" or legacy_group_by_cluster
+    want_clusters_pre = (
+        selected_page_pre in {"关注页", "主题聚合"}
+        or group_mode_pre == "cluster"
+        or legacy_group_by_cluster
+    )
 
     posts, assertions, missing = load_sources()
     if missing:
@@ -121,9 +125,12 @@ def main() -> None:
     cluster_post_overrides_df = pd.DataFrame()
     cluster_load_error = ""
     if want_clusters_pre:
-        clusters_df, cluster_topic_map_df, cluster_post_overrides_df, cluster_load_error = load_topic_cluster_sources(
-            turso_url, turso_token
-        )
+        (
+            clusters_df,
+            cluster_topic_map_df,
+            cluster_post_overrides_df,
+            cluster_load_error,
+        ) = load_topic_cluster_sources(turso_url, turso_token)
         assertions = enrich_assertions_with_clusters(
             assertions,
             clusters=clusters_df,
@@ -213,10 +220,16 @@ def main() -> None:
         )
         return
 
-    assertion_counts = assertions_filtered.groupby("post_uid")["idx"].count() if not assertions_filtered.empty else None
+    assertion_counts = (
+        assertions_filtered.groupby("post_uid")["idx"].count()
+        if not assertions_filtered.empty
+        else None
+    )
     posts_view = posts_filtered.copy()
     if assertion_counts is not None:
-        posts_view["assertion_count"] = posts_view["post_uid"].map(assertion_counts).fillna(0).astype(int)
+        posts_view["assertion_count"] = (
+            posts_view["post_uid"].map(assertion_counts).fillna(0).astype(int)
+        )
     else:
         posts_view["assertion_count"] = 0
     show_tables(

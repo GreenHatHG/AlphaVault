@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """
 Thread tree rendering helpers.
 
 Output: an ASCII tree text (├── / └── / │), like 1.txt.
 """
+
+from __future__ import annotations
 
 import re
 
@@ -89,7 +89,9 @@ def _ascii_node_line(
     node = nodes.get(node_id) or {}
     missing = bool(node.get("missing"))
     kind = str(node.get("kind") or "").strip() or ("source" if missing else "status")
-    kind_label = {"status": "原帖", "repost": "转发", "source": "源帖"}.get(kind, "帖子")
+    kind_label = {"status": "原帖", "repost": "转发", "source": "源帖"}.get(
+        kind, "帖子"
+    )
     prefix = f"[{kind_label} ID: {node_id}]"
 
     raw_text = str(node.get("raw_text") or "").strip()
@@ -97,7 +99,9 @@ def _ascii_node_line(
     author = str(node.get("author") or "").strip()
 
     if text_override is not None and str(text_override or "").strip():
-        text = _maybe_prefix_focus_symbol(str(text_override).strip(), blogger_authors=blogger_authors)
+        text = _maybe_prefix_focus_symbol(
+            str(text_override).strip(), blogger_authors=blogger_authors
+        )
         return f"{prefix} {text}"
 
     segments = parse_display_md_segments(display_md) if display_md else []
@@ -109,7 +113,11 @@ def _ascii_node_line(
     if not text and missing:
         return f"{prefix} （缺失）"
 
-    if author and text and not (text.startswith(author + "：") or text.startswith(author + ":")):
+    if (
+        author
+        and text
+        and not (text.startswith(author + "：") or text.startswith(author + ":"))
+    ):
         text = f"{author}：{text}"
 
     if text:
@@ -131,7 +139,11 @@ def _ascii_node_main_content(node_id: str, *, nodes: dict[str, dict]) -> str:
         return segments[-1]
 
     text = _to_one_line_text(raw_text)
-    if author and text and not (text.startswith(author + "：") or text.startswith(author + ":")):
+    if (
+        author
+        and text
+        and not (text.startswith(author + "：") or text.startswith(author + ":"))
+    ):
         return f"{author}：{text}"
     return text
 
@@ -256,7 +268,9 @@ def _ascii_render_virtual_trie(
             lines.append(
                 prefix
                 + branch
-                + _ascii_node_line(child_id, nodes=nodes, blogger_authors=blogger_authors)
+                + _ascii_node_line(
+                    child_id, nodes=nodes, blogger_authors=blogger_authors
+                )
                 + " （循环）"
             )
             continue
@@ -300,7 +314,9 @@ def _ascii_expand_edge(
     )
 
     child_display_md = str(child_node.get("display_md") or "").strip()
-    child_segments = parse_display_md_segments(child_display_md) if child_display_md else []
+    child_segments = (
+        parse_display_md_segments(child_display_md) if child_display_md else []
+    )
 
     if child_segments and len(child_segments) >= 2 and parent_key:
         first_key = _content_key_for_compare(child_segments[0])
@@ -308,7 +324,9 @@ def _ascii_expand_edge(
             child_segments = child_segments[1:]
 
     if not child_segments:
-        return [], _ascii_node_line(child_id, nodes=nodes, blogger_authors=blogger_authors)
+        return [], _ascii_node_line(
+            child_id, nodes=nodes, blogger_authors=blogger_authors
+        )
     last_seg = child_segments[-1]
     if len(child_segments) == 1:
         return [], _ascii_node_line(
@@ -339,10 +357,13 @@ def _ascii_expand_edge(
 
     virtual_prefix = f"[{VIRTUAL_NODE_LABEL}] "
     virtual_lines = [
-        virtual_prefix + _maybe_prefix_focus_symbol(str(seg), blogger_authors=blogger_authors)
+        virtual_prefix
+        + _maybe_prefix_focus_symbol(str(seg), blogger_authors=blogger_authors)
         for seg in virtual_segments
     ]
-    real_line = _ascii_node_line(child_id, nodes=nodes, text_override=last_seg, blogger_authors=blogger_authors)
+    real_line = _ascii_node_line(
+        child_id, nodes=nodes, text_override=last_seg, blogger_authors=blogger_authors
+    )
     return virtual_lines, real_line
 
 
@@ -410,7 +431,9 @@ def _render_ascii_tree(
     visited: set[str] = set()
     dedup_real_keys = _build_real_node_key_set(root_id, nodes=nodes, children=children)
 
-    lines.append(_ascii_node_line(root_id, nodes=nodes, blogger_authors=blogger_authors))
+    lines.append(
+        _ascii_node_line(root_id, nodes=nodes, blogger_authors=blogger_authors)
+    )
     order.append(root_id)
     visited.add(root_id)
 

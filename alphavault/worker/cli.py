@@ -38,17 +38,43 @@ def parse_args() -> argparse.Namespace:
     ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
     ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
 
-    parser = argparse.ArgumentParser(description="Weibo RSS -> Turso queue -> AI -> Turso")
-    parser.add_argument("--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）")
-    parser.add_argument("--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）")
+    parser = argparse.ArgumentParser(
+        description="Weibo RSS -> Turso queue -> AI -> Turso"
+    )
+    parser.add_argument(
+        "--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）"
+    )
+    parser.add_argument(
+        "--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）"
+    )
     parser.add_argument("--author", default="", help="作者名（为空则从 RSS 里取）")
     parser.add_argument("--user-id", default="", help="微博用户ID（可为空，自动推断）")
-    parser.add_argument("--active-hours", default="", help="worker 只在这些小时做事（CST），格式: 6-22；为空=全天")
-    parser.add_argument("--limit", type=int, default=0, help="最多处理多少条（0 表示不限）")
-    parser.add_argument("--rss-timeout", type=float, default=15.0, help="RSS HTTP 超时秒数")
-    parser.add_argument("--interval-seconds", type=float, default=0.0, help="worker 维护间隔秒数（0=读 WORKER_INTERVAL_SECONDS 或默认 600）")
-    parser.add_argument("--worker-threads", type=int, default=0, help="后台 AI 线程数（0=自动）")
-    parser.add_argument("--ai-stuck-seconds", type=int, default=3600, help="running 超过多久算卡死（秒）")
+    parser.add_argument(
+        "--active-hours",
+        default="",
+        help="worker 只在这些小时做事（CST），格式: 6-22；为空=全天",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="最多处理多少条（0 表示不限）"
+    )
+    parser.add_argument(
+        "--rss-timeout", type=float, default=15.0, help="RSS HTTP 超时秒数"
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=0.0,
+        help="worker 维护间隔秒数（0=读 WORKER_INTERVAL_SECONDS 或默认 600）",
+    )
+    parser.add_argument(
+        "--worker-threads", type=int, default=0, help="后台 AI 线程数（0=自动）"
+    )
+    parser.add_argument(
+        "--ai-stuck-seconds",
+        type=int,
+        default=3600,
+        help="running 超过多久算卡死（秒）",
+    )
 
     # AI config (litellm only; mostly via env)
     parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
@@ -57,18 +83,25 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv(ENV_AI_BASE_URL, "").strip(),
         help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
     )
-    parser.add_argument("--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）")
+    parser.add_argument(
+        "--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）"
+    )
     parser.add_argument(
         "--api-mode",
         default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
     )
     parser.add_argument("--ai-stream", action="store_true")
-    parser.add_argument("--prompt-version", default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION))
+    parser.add_argument(
+        "--prompt-version",
+        default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION),
+    )
     parser.add_argument(
         "--ai-retries",
         type=int,
-        default=ai_retries_env if ai_retries_env is not None else DEFAULT_AI_RETRY_COUNT,
+        default=ai_retries_env
+        if ai_retries_env is not None
+        else DEFAULT_AI_RETRY_COUNT,
     )
     parser.add_argument(
         "--ai-temperature",
@@ -96,7 +129,9 @@ def parse_args() -> argparse.Namespace:
         default=ai_max_inflight_env if ai_max_inflight_env is not None else 12,
     )
     parser.add_argument("--trace-out", type=Path, default=None)
-    parser.add_argument("--relevant-threshold", type=float, default=0.35, help="相关度阈值")
+    parser.add_argument(
+        "--relevant-threshold", type=float, default=0.35, help="相关度阈值"
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -108,7 +143,9 @@ def _resolve_rss_urls(args: argparse.Namespace) -> list[str]:
     return rss_urls
 
 
-def _parse_worker_active_hours_from_args(args: argparse.Namespace) -> Optional[tuple[int, int]]:
+def _parse_worker_active_hours_from_args(
+    args: argparse.Namespace,
+) -> Optional[tuple[int, int]]:
     active_hours_value = (
         args.active_hours.strip()
         if args.active_hours

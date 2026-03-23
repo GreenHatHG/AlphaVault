@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """
 Streamlit tabs: misc.
 
 This module groups the smaller tabs to keep files under control.
 """
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 import re
@@ -41,7 +41,11 @@ def show_topic_timeline(
     )
 
     keyword_post_uids: set[str] = set()
-    show_keyword_union = group_label == "板块" and "cluster_key" in group_view.columns and "raw_text" in assertions_filtered.columns
+    show_keyword_union = (
+        group_label == "板块"
+        and "cluster_key" in group_view.columns
+        and "raw_text" in assertions_filtered.columns
+    )
     if show_keyword_union:
         cluster_keys = []
         if "cluster_key" in group_view.columns:
@@ -52,7 +56,6 @@ def show_topic_timeline(
                     if str(x).strip()
                 )
             )
-        cluster_key = cluster_keys[0] if cluster_keys else ""
         if len(cluster_keys) > 1:
             st.caption("提示：这个板块名对应多个ID，先用第一个。")
 
@@ -72,7 +75,11 @@ def show_topic_timeline(
             post_text["post_uid"] = post_text["post_uid"].astype(str).str.strip()
             post_text = post_text[post_text["post_uid"].ne("")]
             post_text = post_text.drop_duplicates(subset=["post_uid"], keep="first")
-            mask = post_text["raw_text"].astype(str).str.contains(pattern, case=False, na=False, regex=True)
+            mask = (
+                post_text["raw_text"]
+                .astype(str)
+                .str.contains(pattern, case=False, na=False, regex=True)
+            )
             keyword_post_uids = set(post_text.loc[mask, "post_uid"].tolist())
 
         merged_uids = group_post_uids | keyword_post_uids
@@ -102,7 +109,9 @@ def show_learning_library(assertions_filtered: pd.DataFrame) -> None:
     education_mask = (
         assertions_filtered["action"].str.startswith("education.", na=False)
         | assertions_filtered["topic_key"].str.startswith("education", na=False)
-        | assertions_filtered["topic_type"].isin(["method", "mindset", "life", "education"])
+        | assertions_filtered["topic_type"].isin(
+            ["method", "mindset", "life", "education"]
+        )
     )
     edu_df = assertions_filtered[education_mask].copy()
     if edu_df.empty:
@@ -127,7 +136,9 @@ def show_learning_library(assertions_filtered: pd.DataFrame) -> None:
     )
 
 
-def show_conflicts_and_changes(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+def show_conflicts_and_changes(
+    assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str
+) -> None:
     st.markdown("**观点变化 / 冲突**")
     group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
 
@@ -170,12 +181,20 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame, *, group_col: 
                 {
                     "author": author,
                     group_label: group_key,
-                    "first_bull": first_bull["created_at"].iloc[0] if not first_bull.empty else None,
-                    "first_bear": first_bear["created_at"].iloc[0] if not first_bear.empty else None,
+                    "first_bull": first_bull["created_at"].iloc[0]
+                    if not first_bull.empty
+                    else None,
+                    "first_bear": first_bear["created_at"].iloc[0]
+                    if not first_bear.empty
+                    else None,
                     "latest_action": last_row["action"].iloc[0],
                     "latest_time": last_row["created_at"].iloc[0],
-                    "first_bull_summary": first_bull["summary"].iloc[0] if not first_bull.empty else "",
-                    "first_bear_summary": first_bear["summary"].iloc[0] if not first_bear.empty else "",
+                    "first_bull_summary": first_bull["summary"].iloc[0]
+                    if not first_bull.empty
+                    else "",
+                    "first_bear_summary": first_bear["summary"].iloc[0]
+                    if not first_bear.empty
+                    else "",
                     "latest_summary": last_row["summary"].iloc[0],
                     "latest_evidence": last_row["evidence"].iloc[0],
                     "latest_url": last_row["url"].iloc[0],
@@ -213,8 +232,12 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame, *, group_col: 
             conflict_rows.append(
                 {
                     group_label: group_key,
-                    "bull_authors": ", ".join(sorted(bulls["author"].unique().tolist())),
-                    "bear_authors": ", ".join(sorted(bears["author"].unique().tolist())),
+                    "bull_authors": ", ".join(
+                        sorted(bulls["author"].unique().tolist())
+                    ),
+                    "bear_authors": ", ".join(
+                        sorted(bears["author"].unique().tolist())
+                    ),
                     "bull_count": len(bulls),
                     "bear_count": len(bears),
                     "bull_summary": latest_bull["summary"].iloc[0],
@@ -256,7 +279,10 @@ def show_tables(
 
     view = posts_filtered.copy()
     view["内容摘要"] = (
-        view["raw_text"].fillna("").str.replace(r"\s+", " ", regex=True).str.slice(0, 120)
+        view["raw_text"]
+        .fillna("")
+        .str.replace(r"\s+", " ", regex=True)
+        .str.slice(0, 120)
     )
     view = view.sort_values(by="created_at", ascending=False)
     st.dataframe(
@@ -305,7 +331,9 @@ def show_tables(
         st.info("当前条件下没有观点。")
         return
     group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
-    show_cluster = group_col != "topic_key" and "cluster_display" in assertions_filtered.columns
+    show_cluster = (
+        group_col != "topic_key" and "cluster_display" in assertions_filtered.columns
+    )
     assertion_cols = [
         "created_at",
         "author",
@@ -324,9 +352,9 @@ def show_tables(
         "industries_str",
     ]
     st.dataframe(
-        assertions_filtered.sort_values(by="created_at", ascending=False)[assertion_cols].rename(
-            columns={"cluster_display": "板块", "topic_key": "主题"}
-        ),
+        assertions_filtered.sort_values(by="created_at", ascending=False)[
+            assertion_cols
+        ].rename(columns={"cluster_display": "板块", "topic_key": "主题"}),
         width="stretch",
         hide_index=True,
     )

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Follow pages (no-code configs) stored in Turso.
 
@@ -8,6 +6,8 @@ One page = follow one thing:
 - follow_key: a key (from assertion.match_keys, e.g. stock:/industry:/topic_key) or cluster_key
 - keywords_text: optional OR keywords
 """
+
+from __future__ import annotations
 
 from datetime import datetime
 

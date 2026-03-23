@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 Keyword OR helpers for Streamlit UI.
 
 Users can input multiple keywords, separated by comma/space/newline,
 and we treat them as OR in text matching.
 """
+
+from __future__ import annotations
 
 import re
 
@@ -31,4 +31,3 @@ def split_keywords_or(text: str) -> list[str]:
 
 
 __all__ = ["KEYWORD_SPLIT_RE", "split_keywords_or"]
-

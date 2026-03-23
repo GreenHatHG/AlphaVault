@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Env loader for local runs.
 
@@ -8,6 +6,8 @@ Rules:
 - If there is a local ".env", load it as a convenience.
 - Never override existing environment variables.
 """
+
+from __future__ import annotations
 
 
 def load_dotenv_if_present() -> None:
@@ -20,4 +20,3 @@ def load_dotenv_if_present() -> None:
         load_dotenv(override=False)
     except Exception:
         return
-

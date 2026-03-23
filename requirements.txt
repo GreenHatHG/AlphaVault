@@ -1,9 +1,0 @@
-streamlit
-sqlalchemy
-sqlalchemy-libsql
-feedparser
-supervisor
-requests
-python-dotenv
-litellm
-redis

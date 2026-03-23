@@ -41,4 +41,3 @@ def parse_json_text(text: str) -> Dict[str, Any]:
         if raw.startswith("json"):
             raw = raw[4:].strip()
     return json.loads(raw)
-

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Weibo display helpers.
 
@@ -11,6 +9,8 @@ Goal: convert noisy Weibo reply/repost chains into readable Markdown:
 - segments separated by '---'
 - optional <img> lines for images
 """
+
+from __future__ import annotations
 
 import html
 import re
@@ -66,6 +66,7 @@ def normalize_weibo_text(text: str) -> str:
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
 
+
 def _maybe_dedupe_repeated_blocks(text: str) -> str:
     """
     Some raw_text becomes: "title\\n\\ncontent" or even "content\\n\\ncontent".
@@ -118,6 +119,7 @@ class WeiboDisplaySegment:
 def _strip_reply_prefix(text: str) -> str:
     return _RE_REPLY_PREFIX.sub("", (text or "").strip()).strip()
 
+
 def _strip_leading_at_mention(text: str, *, target: str) -> str:
     """
     Remove a redundant leading "@target" mention at the start of a segment.
@@ -167,7 +169,9 @@ def _split_nick_and_text(value: str) -> tuple[str, str]:
     return "", raw
 
 
-def parse_weibo_reply_chain(raw_text: str, *, default_author: str) -> List[WeiboDisplaySegment]:
+def parse_weibo_reply_chain(
+    raw_text: str, *, default_author: str
+) -> List[WeiboDisplaySegment]:
     """
     Convert a Weibo-style reply/repost chain to ordered segments (oldest -> newest).
 
@@ -194,15 +198,23 @@ def parse_weibo_reply_chain(raw_text: str, *, default_author: str) -> List[Weibo
             continue
         nick, content = _split_nick_and_text(item)
         content = normalize_weibo_text(_strip_reply_prefix(content))
-        speaker = (nick or "").strip() or (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
+        speaker = (
+            (nick or "").strip()
+            or (default_author or "").strip()
+            or DEFAULT_UNKNOWN_AUTHOR
+        )
         if not content:
             continue
-        quoted_segments.append(WeiboDisplaySegment(speaker=speaker, text=content, is_current=False))
+        quoted_segments.append(
+            WeiboDisplaySegment(speaker=speaker, text=content, is_current=False)
+        )
 
     ordered: List[WeiboDisplaySegment] = list(reversed(quoted_segments))
     if current_text:
         speaker = (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
-        ordered.append(WeiboDisplaySegment(speaker=speaker, text=current_text, is_current=True))
+        ordered.append(
+            WeiboDisplaySegment(speaker=speaker, text=current_text, is_current=True)
+        )
 
     if not ordered and text:
         speaker = (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
@@ -222,7 +234,9 @@ class _ImgSrcExtractor(HTMLParser):
         attr_map = {str(k or "").lower(): (v or "") for k, v in attrs}
         url = (attr_map.get("src") or "").strip()
         if not url:
-            url = (attr_map.get("data-src") or attr_map.get("data-original") or "").strip()
+            url = (
+                attr_map.get("data-src") or attr_map.get("data-original") or ""
+            ).strip()
         if not url:
             return
         if url.startswith("//"):
@@ -288,7 +302,9 @@ def _extract_repost(text: str) -> Optional[tuple[str, str, str]]:
     return comment_text, nick, original_text
 
 
-def _expand_repost_segments(seg: WeiboDisplaySegment, *, max_depth: int) -> List[WeiboDisplaySegment]:
+def _expand_repost_segments(
+    seg: WeiboDisplaySegment, *, max_depth: int
+) -> List[WeiboDisplaySegment]:
     if max_depth <= 0:
         return [seg]
 
@@ -298,12 +314,16 @@ def _expand_repost_segments(seg: WeiboDisplaySegment, *, max_depth: int) -> List
 
     comment_text, nick, original_text = extracted
 
-    original_seg = WeiboDisplaySegment(speaker=nick, text=original_text, is_current=False)
+    original_seg = WeiboDisplaySegment(
+        speaker=nick, text=original_text, is_current=False
+    )
     expanded_original = _expand_repost_segments(original_seg, max_depth=max_depth - 1)
 
     speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
     retweeter_text = (comment_text or "").rstrip()
-    retweeter_seg = WeiboDisplaySegment(speaker=speaker, text=retweeter_text, is_current=seg.is_current)
+    retweeter_seg = WeiboDisplaySegment(
+        speaker=speaker, text=retweeter_text, is_current=seg.is_current
+    )
 
     return expanded_original + [retweeter_seg]
 
@@ -319,7 +339,9 @@ def format_weibo_display_md(
     author: str = "",
     image_urls: Optional[Iterable[str]] = None,
 ) -> str:
-    segments = parse_weibo_reply_chain(raw_text, default_author=str(author or "").strip())
+    segments = parse_weibo_reply_chain(
+        raw_text, default_author=str(author or "").strip()
+    )
     if not segments:
         return ""
 
@@ -339,7 +361,9 @@ def format_weibo_display_md(
             continue
         if prev_speaker:
             text = _strip_leading_at_mention(text, target=prev_speaker)
-        normalized_segments.append(WeiboDisplaySegment(speaker=speaker, text=text, is_current=seg.is_current))
+        normalized_segments.append(
+            WeiboDisplaySegment(speaker=speaker, text=text, is_current=seg.is_current)
+        )
         prev_speaker = speaker
 
     blocks: List[str] = []

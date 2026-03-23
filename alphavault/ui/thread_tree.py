@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 Thread tree helpers (facade).
 
 Keep old imports working:
 - from alphavault.ui.thread_tree import build_weibo_thread_forest
 """
+
+from __future__ import annotations
 
 from alphavault.ui.thread_tree_build import build_weibo_thread_forest
 from alphavault.ui.thread_tree_parse import (
@@ -38,4 +38,3 @@ __all__ = [
     "parse_weibo_csv_raw_fields",
     "strip_csv_raw_fields",
 ]
-

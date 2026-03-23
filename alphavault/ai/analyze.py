@@ -142,10 +142,10 @@ JSON 结构:
 - 无法确定时给更保守分数并减少 assertions 数量
 
 commentary_text（博主自己的评论段，核心）:
-{analysis_context.get("commentary_text","")}
+{analysis_context.get("commentary_text", "")}
 
 quoted_text（转发/引用上下文）:
-{analysis_context.get("quoted_text","")}
+{analysis_context.get("quoted_text", "")}
 
 补充元信息:
 {json.dumps(row, ensure_ascii=False)}
@@ -153,7 +153,9 @@ quoted_text（转发/引用上下文）:
 
     resolved_api_mode = (api_mode or DEFAULT_AI_MODE).strip().lower()
 
-    trace_label = clean_text(row.get("id", "")) or clean_text(row.get("bid", "")) or "weibo"
+    trace_label = (
+        clean_text(row.get("id", "")) or clean_text(row.get("bid", "")) or "weibo"
+    )
     parsed = _call_ai_with_litellm(
         prompt=prompt,
         api_mode=resolved_api_mode,
@@ -184,25 +186,42 @@ quoted_text（转发/引用上下文）:
         if not isinstance(a, dict):
             continue
         source_type = clean_text(a.get("source_type", "commentary")).lower()
-        source_type = source_type if source_type in {"commentary", "extension", "forward_only"} else "commentary"
+        source_type = (
+            source_type
+            if source_type in {"commentary", "extension", "forward_only"}
+            else "commentary"
+        )
         normalized_assertions.append(
             {
-                "topic_key": clean_text(a.get("topic_key", "other:misc")) or "other:misc",
+                "topic_key": clean_text(a.get("topic_key", "other:misc"))
+                or "other:misc",
                 "action": normalize_action(clean_text(a.get("action", "view.bullish"))),
                 "action_strength": clamp_int(a.get("action_strength", 1), 0, 3, 1),
                 "summary": clean_text(a.get("summary", "")) or "未提供摘要",
                 "evidence": clean_text(a.get("evidence", "")),
                 "confidence": clamp_float(a.get("confidence", 0.5), 0.0, 1.0, 0.5),
-                "stock_codes_json": json.dumps(a.get("stock_codes_json", []), ensure_ascii=False),
-                "stock_names_json": json.dumps(a.get("stock_names_json", []), ensure_ascii=False),
-                "industries_json": json.dumps(a.get("industries_json", []), ensure_ascii=False),
-                "commodities_json": json.dumps(a.get("commodities_json", []), ensure_ascii=False),
-                "indices_json": json.dumps(a.get("indices_json", []), ensure_ascii=False),
+                "stock_codes_json": json.dumps(
+                    a.get("stock_codes_json", []), ensure_ascii=False
+                ),
+                "stock_names_json": json.dumps(
+                    a.get("stock_names_json", []), ensure_ascii=False
+                ),
+                "industries_json": json.dumps(
+                    a.get("industries_json", []), ensure_ascii=False
+                ),
+                "commodities_json": json.dumps(
+                    a.get("commodities_json", []), ensure_ascii=False
+                ),
+                "indices_json": json.dumps(
+                    a.get("indices_json", []), ensure_ascii=False
+                ),
                 "source_type": source_type,
             }
         )
 
-    return AnalyzeResult(status=status, invest_score=invest_score, assertions=normalized_assertions)
+    return AnalyzeResult(
+        status=status, invest_score=invest_score, assertions=normalized_assertions
+    )
 
 
 def validate_and_adjust_assertions(
@@ -212,7 +231,9 @@ def validate_and_adjust_assertions(
 ) -> List[Dict[str, Any]]:
     commentary = commentary_text or ""
     quoted = quoted_text or ""
-    fallback_evidence = commentary[:120] if commentary else (quoted[:120] if quoted else "")
+    fallback_evidence = (
+        commentary[:120] if commentary else (quoted[:120] if quoted else "")
+    )
 
     fixed: List[Dict[str, Any]] = []
     for a in assertions:
@@ -223,7 +244,11 @@ def validate_and_adjust_assertions(
         confidence = clamp_float(a.get("confidence", 0.5), 0.0, 1.0, 0.5)
         strength = clamp_int(a.get("action_strength", 1), 0, 3, 1)
         source_type = clean_text(a.get("source_type", "commentary")).lower()
-        source_type = source_type if source_type in {"commentary", "extension", "forward_only"} else "commentary"
+        source_type = (
+            source_type
+            if source_type in {"commentary", "extension", "forward_only"}
+            else "commentary"
+        )
 
         if evidence and commentary and evidence in commentary:
             pass

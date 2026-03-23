@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Streamlit tab: trade flow.
 """
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 import math
@@ -315,13 +315,19 @@ def _prepare_trade_board_df(
         .astype(int)
         .clip(lower=0, upper=3)
     )
-    board_df["buy_strength"] = board_df["strength"].where(board_df["action"].isin(TRADE_BUY_ACTIONS), 0)
-    board_df["sell_strength"] = board_df["strength"].where(board_df["action"].isin(TRADE_SELL_ACTIONS), 0)
+    board_df["buy_strength"] = board_df["strength"].where(
+        board_df["action"].isin(TRADE_BUY_ACTIONS), 0
+    )
+    board_df["sell_strength"] = board_df["strength"].where(
+        board_df["action"].isin(TRADE_SELL_ACTIONS), 0
+    )
     board_df["hold_mentions"] = board_df["action"].isin(TRADE_HOLD_ACTIONS).astype(int)
     return board_df, max_ts
 
 
-def _build_trade_board_agg(board_df: pd.DataFrame, *, group_col: str, max_ts: datetime) -> pd.DataFrame:
+def _build_trade_board_agg(
+    board_df: pd.DataFrame, *, group_col: str, max_ts: datetime
+) -> pd.DataFrame:
     agg = board_df.groupby(group_col, as_index=False).agg(
         买强度=("buy_strength", "sum"),
         卖强度=("sell_strength", "sum"),
@@ -338,7 +344,9 @@ def _build_trade_board_agg(board_df: pd.DataFrame, *, group_col: str, max_ts: da
         .tail(1)
         .set_index(group_col)
     )
-    last_badge = last_rows.apply(lambda row: trade_action_badge(row["action"], row["strength"]), axis=1)
+    last_badge = last_rows.apply(
+        lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
+    )
     agg["最近大佬"] = agg[group_col].map(last_rows["author"])
     agg["最近动作"] = agg[group_col].map(last_badge)
     agg["最近摘要"] = (
@@ -378,7 +386,9 @@ def _sort_trade_board_agg(agg: pd.DataFrame, *, sort_mode: str) -> pd.DataFrame:
     )
 
 
-def _render_trade_kpis(agg_sorted: pd.DataFrame, *, board_df: pd.DataFrame, group_label: str) -> None:
+def _render_trade_kpis(
+    agg_sorted: pd.DataFrame, *, board_df: pd.DataFrame, group_label: str
+) -> None:
     kpi_left, kpi_mid, kpi_right = st.columns(3)
     kpi_left.metric(f"{group_label}数", f"{len(agg_sorted)}")
     kpi_mid.metric("大佬数", f"{int(board_df['author'].nunique())}")
@@ -424,7 +434,9 @@ def _render_top_assets(
 
 def _top_authors(board_df: pd.DataFrame, *, max_authors: int) -> list[str]:
     if "invest_score" in board_df.columns:
-        score_series = pd.to_numeric(board_df["invest_score"], errors="coerce").fillna(0.0)
+        score_series = pd.to_numeric(board_df["invest_score"], errors="coerce").fillna(
+            0.0
+        )
     else:
         score_series = pd.Series(0.0, index=board_df.index)
 
@@ -456,17 +468,25 @@ def _render_trade_matrix(
         return
 
     pair_df = board_df[
-        board_df[group_col].isin(top_asset_keys) & board_df["author"].isin(top_author_list)
+        board_df[group_col].isin(top_asset_keys)
+        & board_df["author"].isin(top_author_list)
     ].copy()
     if pair_df.empty:
         st.info("当前条件下，作业格没有数据。")
         return
 
-    pair_last = pair_df.sort_values(by="created_at").groupby([group_col, "author"]).tail(1).copy()
+    pair_last = (
+        pair_df.sort_values(by="created_at")
+        .groupby([group_col, "author"])
+        .tail(1)
+        .copy()
+    )
     pair_last["badge"] = pair_last.apply(
         lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
     )
-    pair_last["age"] = pair_last["created_at"].apply(lambda ts: format_age_label(max_ts, ts))
+    pair_last["age"] = pair_last["created_at"].apply(
+        lambda ts: format_age_label(max_ts, ts)
+    )
     pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
 
     matrix = (
@@ -481,7 +501,9 @@ def _render_trade_matrix(
     )
 
 
-def _render_trade_detail(board_df: pd.DataFrame, *, top_asset_keys: list, group_col: str, group_label: str) -> None:
+def _render_trade_detail(
+    board_df: pd.DataFrame, *, top_asset_keys: list, group_col: str, group_label: str
+) -> None:
     st.markdown(f"**{group_label}细节（点开看最近几条）**")
     if not top_asset_keys:
         st.info(f"没有{group_label}数据。")
@@ -502,8 +524,12 @@ def _render_trade_detail(board_df: pd.DataFrame, *, top_asset_keys: list, group_
         key="trade_board_detail_n",
     )
     detail_df = board_df[board_df[group_col] == selected_key].copy()
-    detail_df = detail_df.sort_values(by="created_at", ascending=False).head(int(detail_n))
-    detail_df["动作"] = detail_df.apply(lambda row: trade_action_badge(row["action"], row["strength"]), axis=1)
+    detail_df = detail_df.sort_values(by="created_at", ascending=False).head(
+        int(detail_n)
+    )
+    detail_df["动作"] = detail_df.apply(
+        lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
+    )
     detail_df["原文"] = (
         detail_df["raw_text"]
         .fillna("")

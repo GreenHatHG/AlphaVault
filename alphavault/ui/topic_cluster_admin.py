@@ -16,7 +16,10 @@ from alphavault.topic_cluster import (
     upsert_cluster_topics,
 )
 from alphavault.ui.topic_cluster_admin_ai_core import _render_ai_section
-from alphavault.ui.topic_cluster_admin_helpers import _build_cluster_display_maps, _format_cluster_label
+from alphavault.ui.topic_cluster_admin_helpers import (
+    _build_cluster_display_maps,
+    _format_cluster_label,
+)
 
 
 def _maybe_init_cluster_tables(engine: Engine, load_error: str) -> None:
@@ -67,7 +70,11 @@ def _render_cluster_upsert_form(engine: Engine) -> None:
 
 def _select_cluster(clusters: pd.DataFrame, *, name_by_key: Dict[str, str]) -> str:
     cluster_keys = sorted(
-        [str(x).strip() for x in clusters["cluster_key"].dropna().tolist() if str(x).strip()]
+        [
+            str(x).strip()
+            for x in clusters["cluster_key"].dropna().tolist()
+            if str(x).strip()
+        ]
     )
     selected_cluster = st.selectbox(
         "选择板块",
@@ -100,12 +107,17 @@ def _render_member_add(
         all_keys = sorted(
             [
                 str(x).strip()
-                for x in assertions_all.get("topic_key", pd.Series(dtype=str)).dropna().unique().tolist()
+                for x in assertions_all.get("topic_key", pd.Series(dtype=str))
+                .dropna()
+                .unique()
+                .tolist()
                 if str(x).strip()
             ]
         )
 
-    search = st.text_input("搜索 key（建议先搜）", value="", key="topic_cluster_search_member_key").strip()
+    search = st.text_input(
+        "搜索 key（建议先搜）", value="", key="topic_cluster_search_member_key"
+    ).strip()
     if search:
         candidates = [k for k in all_keys if search.lower() in k.lower()]
         candidates = candidates[:300]
@@ -123,7 +135,9 @@ def _render_member_add(
         return
     try:
         ensure_cluster_schema(engine)
-        n = upsert_cluster_topics(engine, cluster_key=selected_cluster, topic_keys=to_add)
+        n = upsert_cluster_topics(
+            engine, cluster_key=selected_cluster, topic_keys=to_add
+        )
     except Exception as exc:
         st.error(f"增加失败：{type(exc).__name__}: {exc}")
         st.stop()
@@ -149,7 +163,9 @@ def _render_member_remove(
         return
     try:
         ensure_cluster_schema(engine)
-        n = delete_cluster_topics(engine, cluster_key=selected_cluster, topic_keys=to_remove)
+        n = delete_cluster_topics(
+            engine, cluster_key=selected_cluster, topic_keys=to_remove
+        )
     except Exception as exc:
         st.error(f"移除失败：{type(exc).__name__}: {exc}")
         st.stop()
@@ -177,14 +193,20 @@ def _render_cluster_delete(
     cluster_name: str,
 ) -> None:
     st.markdown("**删除板块**")
-    title = f"{selected_cluster} · {cluster_name}" if cluster_name and cluster_name != selected_cluster else selected_cluster
+    title = (
+        f"{selected_cluster} · {cluster_name}"
+        if cluster_name and cluster_name != selected_cluster
+        else selected_cluster
+    )
     st.caption(f"你要删：{title}")
     st.caption("注意：不会自动删“关注页”。如果你有关注这个板块，要去“关注页”手动删。")
 
     confirm_key = f"topic_cluster_delete_confirm:{selected_cluster}"
     btn_key = f"topic_cluster_delete_btn:{selected_cluster}"
     confirm = st.checkbox("我确认要删除这个板块", value=False, key=confirm_key)
-    if not st.button("删除这个板块", type="secondary", disabled=not bool(confirm), key=btn_key):
+    if not st.button(
+        "删除这个板块", type="secondary", disabled=not bool(confirm), key=btn_key
+    ):
         return
 
     try:
@@ -214,7 +236,9 @@ def show_topic_cluster_admin(
     load_error: str,
 ) -> None:
     st.markdown("**主题聚合（板块）**")
-    st.caption("把很多 key 合成一个板块看（key 可以是 stock/industry/commodity/index/topic_key）。")
+    st.caption(
+        "把很多 key 合成一个板块看（key 可以是 stock/industry/commodity/index/topic_key）。"
+    )
 
     _maybe_init_cluster_tables(engine, load_error)
 
@@ -233,7 +257,11 @@ def show_topic_cluster_admin(
         st.info("请选择一个板块。")
         return
 
-    current = topic_map[topic_map["cluster_key"] == selected_cluster].copy() if not topic_map.empty else pd.DataFrame()
+    current = (
+        topic_map[topic_map["cluster_key"] == selected_cluster].copy()
+        if not topic_map.empty
+        else pd.DataFrame()
+    )
     current_topics = sorted(
         [
             str(x).strip()
@@ -248,7 +276,12 @@ def show_topic_cluster_admin(
     with col_mid:
         st.metric("当前成员数", f"{len(current_topics)}")
 
-    action = st.radio("操作", options=["增加", "移除"], horizontal=True, key="topic_cluster_manage_action")
+    action = st.radio(
+        "操作",
+        options=["增加", "移除"],
+        horizontal=True,
+        key="topic_cluster_manage_action",
+    )
     if action == "增加":
         _render_member_add(
             engine=engine,
@@ -256,7 +289,11 @@ def show_topic_cluster_admin(
             selected_cluster=selected_cluster,
         )
     else:
-        _render_member_remove(engine=engine, current_topics=current_topics, selected_cluster=selected_cluster)
+        _render_member_remove(
+            engine=engine,
+            current_topics=current_topics,
+            selected_cluster=selected_cluster,
+        )
 
     _render_current_member_list(current_topics)
 
