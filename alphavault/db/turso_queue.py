@@ -79,7 +79,7 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
 
 
 def cloud_post_is_processed(engine: Engine, post_uid: str) -> bool:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
                 text("SELECT processed_at FROM posts WHERE post_uid = :post_uid LIMIT 1"),
@@ -159,7 +159,7 @@ def upsert_pending_post(
 
 
 def select_due_post_uids(engine: Engine, *, now_epoch: int, limit: int) -> list[str]:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         rows = (
             conn.execute(
                 text(
@@ -212,7 +212,7 @@ def try_mark_ai_running(
 
 
 def load_cloud_post(engine: Engine, post_uid: str) -> CloudPost:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
                 text(
@@ -261,7 +261,7 @@ def load_recent_posts_by_author(
     resolved_author = str(author or "").strip()
     if not resolved_author:
         return []
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         rows = (
             conn.execute(
                 text(

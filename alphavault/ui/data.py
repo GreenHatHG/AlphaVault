@@ -19,7 +19,7 @@ import streamlit as st
 
 from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 from alphavault.db.introspect import table_columns
-from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.topic_cluster import try_load_cluster_tables
 
 STREAMLIT_SOURCE_NAME = "archive"
@@ -145,42 +145,43 @@ def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.Da
     if not db_url:
         raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
     engine = ensure_turso_engine(db_url, auth_token)
-    post_cols = table_columns(engine, "posts")
-    display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
-    assertion_cols = table_columns(engine, "assertions")
-    posts_query = """
-	        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-	               {display_expr},
-	               final_status AS status, invest_score, processed_at, model, prompt_version
-	        FROM posts
-	        WHERE processed_at IS NOT NULL
-	    """
-    posts_query = posts_query.format(display_expr=display_expr)
-    wanted_assertion_cols = [
-        "post_uid",
-        "idx",
-        "topic_key",
-        "action",
-        "action_strength",
-        "summary",
-        "evidence",
-        "confidence",
-        "stock_codes_json",
-        "stock_names_json",
-        "industries_json",
-        "commodities_json",
-        "indices_json",
-        "author",
-        "created_at",
-    ]
-    selected_assertion_cols = [col for col in wanted_assertion_cols if col in assertion_cols]
-    if selected_assertion_cols:
-        assertions_query = f"SELECT {', '.join(selected_assertion_cols)} FROM assertions"
-    else:
-        assertions_query = "SELECT * FROM assertions"
-    posts = pd.read_sql_query(posts_query, engine)
-    assertions = pd.read_sql_query(assertions_query, engine)
-    return posts, assertions
+    with turso_connect_autocommit(engine) as conn:
+        post_cols = table_columns(conn, "posts")
+        display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
+        assertion_cols = table_columns(conn, "assertions")
+        posts_query = """
+		        SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+		               {display_expr},
+		               final_status AS status, invest_score, processed_at, model, prompt_version
+		        FROM posts
+		        WHERE processed_at IS NOT NULL
+		    """
+        posts_query = posts_query.format(display_expr=display_expr)
+        wanted_assertion_cols = [
+            "post_uid",
+            "idx",
+            "topic_key",
+            "action",
+            "action_strength",
+            "summary",
+            "evidence",
+            "confidence",
+            "stock_codes_json",
+            "stock_names_json",
+            "industries_json",
+            "commodities_json",
+            "indices_json",
+            "author",
+            "created_at",
+        ]
+        selected_assertion_cols = [col for col in wanted_assertion_cols if col in assertion_cols]
+        if selected_assertion_cols:
+            assertions_query = f"SELECT {', '.join(selected_assertion_cols)} FROM assertions"
+        else:
+            assertions_query = "SELECT * FROM assertions"
+        posts = pd.read_sql_query(posts_query, conn)
+        assertions = pd.read_sql_query(assertions_query, conn)
+        return posts, assertions
 
 
 def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
