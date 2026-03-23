@@ -23,6 +23,35 @@ _SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_turso_dialect_patched"
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
 
 
+def is_turso_stream_not_found_error(err: BaseException) -> bool:
+    """
+    Detect the transient Hrana error: "stream not found" (HTTP 404).
+
+    This usually means the client is trying to reuse an old stream id.
+    Disposing the SQLAlchemy engine pool typically fixes it.
+    """
+    needle = "stream not found"
+    current: BaseException | None = err
+    for _ in range(8):
+        if current is None:
+            break
+        try:
+            msg = str(current)
+        except Exception:
+            msg = ""
+        if needle in msg.lower():
+            return True
+        # SQLAlchemy often wraps the original exception in `.orig`.
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException) and orig is not current:
+            current = orig
+            continue
+        current = current.__cause__ if isinstance(current.__cause__, BaseException) else current.__context__
+        if not isinstance(current, BaseException):
+            current = None
+    return False
+
+
 def turso_connect_autocommit(engine: Engine) -> Connection:
     """
     Return a Connection that behaves like AUTOCOMMIT for Turso (libsql).
@@ -214,6 +243,7 @@ def ensure_turso_engine(url: str, token: str) -> Engine:
     return create_engine(
         f"sqlite+libsql://{turso_url}?secure=true",
         connect_args={"auth_token": token} if token else {},
+        pool_pre_ping=True,
         # Avoid calling DBAPI rollback() on connection return.
         # Some libsql builds may panic on rollback after transient failures.
         pool_reset_on_return=None,

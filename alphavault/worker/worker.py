@@ -42,7 +42,7 @@ from alphavault.ai.analyze import (
 from alphavault.ai._client import AiInvalidJsonError
 from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
 from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
-from alphavault.db.turso_db import get_turso_engine_from_env
+from alphavault.db.turso_db import get_turso_engine_from_env, is_turso_stream_not_found_error
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
     load_cloud_post,
@@ -83,6 +83,8 @@ from alphavault.weibo.topic_prompt_tree import (
     build_topic_runtime_context,
     thread_root_info_for_post,
 )
+
+TURSO_READY_RETRY_SECONDS = 5.0
 
 
 @dataclass
@@ -708,6 +710,20 @@ def _log_spool_and_redis(*, verbose: bool, spool_dir: Path, redis_client, redis_
         print(f"[redis] enabled key={redis_queue_key}", flush=True)
 
 
+def _maybe_dispose_turso_engine_on_stream_not_found(
+    *, engine: Engine, err: BaseException, verbose: bool
+) -> None:
+    if not is_turso_stream_not_found_error(err):
+        return
+    try:
+        engine.dispose()
+        if verbose:
+            print("[turso] disposed_engine reason=stream_not_found", flush=True)
+    except Exception as dispose_e:
+        if verbose:
+            print(f"[turso] dispose_engine_failed {type(dispose_e).__name__}: {dispose_e}", flush=True)
+
+
 def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> bool:
     if turso_ready:
         return True
@@ -716,6 +732,7 @@ def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> 
         print("[turso] ready", flush=True)
         return True
     except Exception as e:
+        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
         if verbose:
             print(f"[turso] not_ready {type(e).__name__}: {e}", flush=True)
         return False
@@ -762,6 +779,7 @@ def _schedule_ai(
             limit=max(1, int(available) * 2),
         )
     except Exception as e:
+        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
         if verbose:
             print(f"[ai] select_due_error {type(e).__name__}: {e}", flush=True)
         return 0, True
@@ -773,6 +791,7 @@ def _schedule_ai(
         try:
             ok = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
         except Exception as e:
+            _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
             if verbose:
                 print(f"[ai] mark_running_error {type(e).__name__}: {e}", flush=True)
             return scheduled, True
@@ -814,6 +833,7 @@ def _run_turso_maintenance(
         )
         recovered += recover_done_without_processed_at(engine, verbose=bool(verbose))
     except Exception as e:
+        _maybe_dispose_turso_engine_on_stream_not_found(engine=engine, err=e, verbose=bool(verbose))
         turso_error = True
         if verbose:
             print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
@@ -871,6 +891,7 @@ def main() -> None:
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
         turso_ready = False
+        turso_next_ready_check_at = 0.0
         while True:
             verbose = bool(args.verbose)
             if worker_active_hours is not None:
@@ -899,8 +920,15 @@ def main() -> None:
                     do_ingest_rss = True
                     rss_next_ingest_at = now + float(rss_interval_seconds)
 
-            if not turso_ready and (do_maintenance or do_ingest_rss):
+            force_maintenance = False
+            if not turso_ready and now >= float(turso_next_ready_check_at):
                 turso_ready = _ensure_turso_ready(engine=engine, verbose=verbose, turso_ready=turso_ready)
+                if turso_ready:
+                    turso_next_ready_check_at = 0.0
+                    # Turso just recovered: run maintenance ASAP to flush spool/redis quickly.
+                    force_maintenance = True
+                else:
+                    turso_next_ready_check_at = now + float(TURSO_READY_RETRY_SECONDS)
             active_engine: Optional[Engine] = engine if turso_ready else None
 
             inserted = 0
@@ -923,7 +951,9 @@ def main() -> None:
             flushed_redis = 0
             flushed_spool = 0
             maintenance_error = False
-            if do_maintenance and active_engine is not None:
+            if (do_maintenance or force_maintenance) and active_engine is not None:
+                if force_maintenance:
+                    maintenance_next_at = now + float(worker_interval)
                 recovered, flushed_redis, flushed_spool, maintenance_error = _run_turso_maintenance(
                     engine=active_engine,
                     spool_dir=spool_dir,
@@ -950,6 +980,10 @@ def main() -> None:
             turso_error = bool(ingest_turso_error or maintenance_error or schedule_error)
             if turso_error:
                 turso_ready = False
+                turso_next_ready_check_at = min(
+                    float(turso_next_ready_check_at) or float("inf"),
+                    time.time() + float(TURSO_READY_RETRY_SECONDS),
+                )
 
             if verbose and (
                 do_maintenance
@@ -960,18 +994,25 @@ def main() -> None:
             ):
                 next_maintenance_in = max(0.0, maintenance_next_at - time.time())
                 next_rss_in = -1.0 if rss_next_ingest_at == float("inf") else max(0.0, rss_next_ingest_at - time.time())
+                next_turso_in = -1.0
+                if not turso_ready:
+                    next_turso_in = max(0.0, float(turso_next_ready_check_at) - time.time())
                 print(
                     f"[tick] turso_ready={1 if active_engine is not None else 0} "
                     f"inflight={len(inflight_futures)} ai_scheduled={scheduled} "
                     f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
                     f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
-                    f"next_maint={int(next_maintenance_in)}s next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s",
+                    f"next_maint={int(next_maintenance_in)}s "
+                    f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
+                    f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
                     flush=True,
                 )
 
             next_deadline = maintenance_next_at
             if rss_next_ingest_at != float("inf"):
                 next_deadline = min(next_deadline, rss_next_ingest_at)
+            if not turso_ready:
+                next_deadline = min(next_deadline, float(turso_next_ready_check_at))
             timeout = max(0.0, next_deadline - time.time())
             if inflight_futures:
                 wakeup_event.wait(timeout)
