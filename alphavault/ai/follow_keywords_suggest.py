@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from alphavault.constants import (
     ENV_AI_API_KEY,
@@ -93,100 +93,68 @@ def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
     )
 
 
-def ai_is_configured() -> tuple[bool, str]:
-    config, err = _get_ai_config_from_env()
-    if config is None:
-        return False, err
-    return True, ""
-
-
-def get_ai_config_summary() -> tuple[Dict[str, Any], str]:
-    config, err = _get_ai_config_from_env()
-    if config is None:
-        return {}, err
-    return (
-        {
-            "model": config.model,
-            "base_url": config.base_url,
-            "api_mode": config.api_mode,
-            "timeout_seconds": float(config.timeout_seconds),
-            "retries": int(config.retries),
-            "temperature": float(config.temperature),
-            "reasoning_effort": str(config.reasoning_effort),
-        },
-        "",
-    )
-
-
-def _format_topic_candidates(topics: Iterable[dict]) -> str:
-    lines: List[str] = []
-    for item in topics:
-        key = clean_text(item.get("key", "")) or clean_text(item.get("topic_key", ""))
-        if not key:
-            continue
-        count = item.get("count", None)
-        hint = clean_text(item.get("hint", ""))
-        hint_part = f" hint={hint}" if hint else ""
-        if count is None:
-            lines.append(f"- {key}{hint_part}")
-        else:
-            lines.append(f"- {key} (count={int(count)}){hint_part}")
-    return "\n".join(lines).strip()
-
-
-def suggest_keys_for_cluster(
+def suggest_keywords_for_follow(
     *,
-    cluster_name: str,
-    description: str,
-    candidates: List[Dict[str, Any]],
-    max_items_per_list: int = 200,
+    follow_key: str,
+    follow_label: str,
+    seed_keywords: list[str],
+    example_texts: list[str],
+    max_keywords: int = 12,
     timeout_seconds: float | None = None,
     retries: int | None = None,
 ) -> Dict[str, Any]:
     """
-    Ask AI to classify key candidates into include/unsure.
+    Ask AI to suggest OR keywords for a follow page.
 
-    candidates: list of {key, count}
-    Returns a parsed JSON dict from the model.
+    Output JSON:
+    {"keywords": ["..."], "note": "..."}
     """
     config, err = _get_ai_config_from_env()
     if config is None:
         raise RuntimeError(err or "ai_not_configured")
 
-    effective_timeout_seconds = (
-        float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
-    )
+    follow_key = clean_text(follow_key)
+    follow_label = clean_text(follow_label) or follow_key
+
+    seed = [clean_text(x) for x in (seed_keywords or [])]
+    seed = [x for x in seed if x]
+    seed_text = ", ".join(seed[:30])
+
+    examples = [clean_text(x) for x in (example_texts or [])]
+    examples = [x for x in examples if x]
+    examples = examples[:12]
+    examples_text = "\n".join([f"- {x}" for x in examples])
+
+    effective_timeout_seconds = float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
     effective_timeout_seconds = max(1.0, effective_timeout_seconds)
 
     effective_retries = int(retries) if retries is not None else int(config.retries)
     effective_retries = max(0, effective_retries)
 
-    cluster_name = clean_text(cluster_name)
-    description = clean_text(description)
-    candidates_text = _format_topic_candidates(candidates)
-
     prompt = f"""
-你是分类助手。我要做一个板块：{cluster_name}
-说明：{description or "（空）"}
+你是关键字助手。我要做一个“关注页”，用关键字 OR 来补漏（AI 可能漏打标签、也可能写简称/外号）。
 
-下面是系统已有的 key 候选列表（后面可能带 count/hint）。
-请你从候选中筛选：哪些 key 属于这个板块。
+关注对象：
+- follow_key: {follow_key}
+- follow_label: {follow_label}
 
-输出严格 JSON（不要 Markdown），结构如下：
+已有种子关键字（可能不全）：
+{seed_text or "（空）"}
+
+下面是一些原文例子（可能包含简称/代码/外号）：
+{examples_text or "（空）"}
+
+请输出严格 JSON（不要 Markdown），结构：
 {{
-  "include_keys": [{{"key": "...", "confidence": 0.0, "reason": "..."}}],
-  "unsure_keys": [{{"key": "...", "confidence": 0.0, "reason": "..."}}],
+  "keywords": ["..."],
+  "note": "一句话说明"
 }}
 
 规则：
-- key 只能从候选列表里选，禁止编造。
-- include_keys 要保守；不确定就放 unsure_keys。
-- 如果 key 是类似 stock:601225.SH 这种“代码”，请优先参考候选里的 hint（比如 stock_name/industry）。没有 hint 就更保守，放 unsure_keys。
-- confidence 范围 0~1。
-- include_keys / unsure_keys 每个最多 {int(max_items_per_list)} 条。
-
-候选 key：
-{candidates_text}
+- keywords 用“普通字符串”，不要正则，不要加括号/|/.* 这种符号。
+- 词尽量短但别太短（不要 1 个字）。
+- 目标是：少而准（一般 5~{int(max_keywords)} 个就够）。
+- 去重；不要把 seed_keywords 原样重复一堆。
 """.strip()
 
     parsed = _call_ai_with_litellm(
@@ -201,21 +169,29 @@ def suggest_keys_for_cluster(
         temperature=float(config.temperature),
         reasoning_effort=str(config.reasoning_effort),
         trace_out=None,
-        trace_label=f"cluster_suggest:{cluster_name}",
+        trace_label=f"follow_keywords:{follow_key}",
     )
     if not isinstance(parsed, dict):
         raise RuntimeError("ai_invalid_json")
-    return parsed
+
+    kws = parsed.get("keywords")
+    if not isinstance(kws, list):
+        kws = []
+    keywords = [clean_text(x) for x in kws if clean_text(x)]
+    # keep small + unique
+    out_keywords: list[str] = []
+    seen: set[str] = set()
+    for kw in keywords:
+        if kw in seen:
+            continue
+        seen.add(kw)
+        out_keywords.append(kw)
+        if len(out_keywords) >= int(max(1, max_keywords)):
+            break
+
+    note = clean_text(parsed.get("note", ""))
+    return {"keywords": out_keywords, "note": note}
 
 
-def suggest_topics_for_cluster(*args, **kwargs) -> Dict[str, Any]:
-    # Backward-compatible alias (older UI code). Prefer suggest_keys_for_cluster().
-    return suggest_keys_for_cluster(*args, **kwargs)
+__all__ = ["suggest_keywords_for_follow"]
 
-
-__all__ = [
-    "ai_is_configured",
-    "get_ai_config_summary",
-    "suggest_keys_for_cluster",
-    "suggest_topics_for_cluster",
-]

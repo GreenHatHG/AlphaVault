@@ -41,7 +41,7 @@ def show_topic_timeline(
     )
 
     keyword_post_uids: set[str] = set()
-    show_keyword_union = group_label == "板块" and group_col == "cluster_display" and "raw_text" in assertions_filtered.columns
+    show_keyword_union = group_label == "板块" and "cluster_key" in group_view.columns and "raw_text" in assertions_filtered.columns
     if show_keyword_union:
         cluster_keys = []
         if "cluster_key" in group_view.columns:

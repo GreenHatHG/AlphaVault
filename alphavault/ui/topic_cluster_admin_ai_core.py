@@ -14,7 +14,7 @@ import streamlit as st
 from sqlalchemy.engine import Engine
 
 from alphavault.ai.analyze import DEFAULT_AI_RETRY_COUNT
-from alphavault.ai.topic_cluster_suggest import ai_is_configured, get_ai_config_summary, suggest_topics_for_cluster
+from alphavault.ai.topic_cluster_suggest import ai_is_configured, get_ai_config_summary, suggest_keys_for_cluster
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_AI_MAX_INFLIGHT,
@@ -62,19 +62,19 @@ def _build_resume_signature(
     *,
     cluster_name: str,
     cluster_desc: str,
-    topic_keys: list[str],
-    max_total_topics: int,
+    candidate_keys: list[str],
+    max_total_keys: int,
     chunk_size: int,
 ) -> str:
     # Keep it stable and small, so we can safely decide whether to resume.
-    text = "\n".join([str(x).strip() for x in topic_keys if str(x).strip()])
+    text = "\n".join([str(x).strip() for x in candidate_keys if str(x).strip()])
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
     payload = {
         "cluster_name": str(cluster_name or "").strip(),
         "cluster_desc": str(cluster_desc or "").strip(),
-        "max_total_topics": int(max_total_topics),
+        "max_total_keys": int(max_total_keys),
         "chunk_size": int(chunk_size),
-        "topic_keys_sha1": digest,
+        "candidate_keys_sha1": digest,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -174,9 +174,15 @@ def _run_ai_batches(
         merged: dict = dict(merged_seed)
     else:
         merged = {}
-    for k in ["include_topics", "unsure_topics"]:
-        if not isinstance(merged.get(k), list):
-            merged[k] = []
+    if not isinstance(merged.get("include_keys"), list):
+        merged["include_keys"] = []
+    if not isinstance(merged.get("unsure_keys"), list):
+        merged["unsure_keys"] = []
+    # Best-effort migration for old cache/state keys.
+    if isinstance(merged.get("include_topics"), list) and not merged["include_keys"]:
+        merged["include_keys"] = merged.get("include_topics", [])
+    if isinstance(merged.get("unsure_topics"), list) and not merged["unsure_keys"]:
+        merged["unsure_keys"] = merged.get("unsure_topics", [])
 
     call_logs: list[dict] = call_logs_seed if isinstance(call_logs_seed, list) else []
 
@@ -267,7 +273,7 @@ def _run_ai_batches(
         limiter.wait()
         start_ts = time.time()
         try:
-            part = suggest_topics_for_cluster(
+            part = suggest_keys_for_cluster(
                 cluster_name=cluster_name,
                 description=cluster_desc,
                 candidates=chunk,
@@ -372,12 +378,20 @@ def _run_ai_batches(
                 if not isinstance(part, dict):
                     raise RuntimeError("ai_invalid_json")
 
-                include_n = (
-                    len(part.get("include_topics") or []) if isinstance(part.get("include_topics"), list) else 0
-                )
-                unsure_n = (
-                    len(part.get("unsure_topics") or []) if isinstance(part.get("unsure_topics"), list) else 0
-                )
+                include_items_raw = part.get("include_keys")
+                if not isinstance(include_items_raw, list):
+                    include_items_raw = part.get("include_topics")
+                if not isinstance(include_items_raw, list):
+                    include_items_raw = []
+
+                unsure_items_raw = part.get("unsure_keys")
+                if not isinstance(unsure_items_raw, list):
+                    unsure_items_raw = part.get("unsure_topics")
+                if not isinstance(unsure_items_raw, list):
+                    unsure_items_raw = []
+
+                include_n = len(include_items_raw)
+                unsure_n = len(unsure_items_raw)
                 call_logs.append(
                     {
                         "batch": idx,
@@ -398,10 +412,8 @@ def _run_ai_batches(
                         flush=True,
                     )
 
-                for key in ["include_topics", "unsure_topics"]:
-                    items = part.get(key)
-                    if isinstance(items, list):
-                        merged[key].extend(items)
+                merged["include_keys"].extend(include_items_raw)
+                merged["unsure_keys"].extend(unsure_items_raw)
 
                 st.session_state[result_key] = merged
                 if resume_enabled:
@@ -459,7 +471,7 @@ def _render_ai_section(
     cluster_name: str,
     cluster_desc: str,
 ) -> None:
-    st.markdown("**AI 筛 topic_key（只输入板块）**")
+    st.markdown("**AI 筛 key（只输入板块）**")
     ok, ai_err = ai_is_configured()
     if not ok:
         st.info(f"AI 没配好：{ai_err}。需要设置环境变量 AI_API_KEY（以及可选 AI_MODEL/AI_BASE_URL）。")
@@ -476,20 +488,35 @@ def _render_ai_section(
 
     st.caption(f"当前板块：{cluster_name}")
 
-    if assertions_all.empty or "topic_key" not in assertions_all.columns:
-        st.info("没有 topic_key 数据，无法给 AI 作为候选。")
+    if assertions_all.empty:
+        st.info("没有数据，无法给 AI 作为候选。")
         return
 
-    topic_counts = assertions_all["topic_key"].dropna().astype(str).str.strip()
-    topic_counts = topic_counts[topic_counts.ne("")]
-    if topic_counts.empty:
-        st.info("topic_key 全空，无法筛选。")
+    counts_series: pd.Series | None = None
+    if "match_keys" in assertions_all.columns:
+        keys_df = assertions_all[["match_keys"]].copy()
+        keys_df = keys_df[keys_df["match_keys"].apply(lambda v: isinstance(v, list))]
+        if not keys_df.empty:
+            keys_df = keys_df.explode("match_keys")
+            keys_df["match_keys"] = keys_df["match_keys"].astype(str).str.strip()
+            keys_df = keys_df[keys_df["match_keys"].ne("")]
+            if not keys_df.empty:
+                keys_df = keys_df.reset_index().rename(columns={"match_keys": "key"})
+                keys_df = keys_df.drop_duplicates(subset=["index", "key"])
+                counts_series = keys_df["key"].value_counts()
+
+    if counts_series is None and "topic_key" in assertions_all.columns:
+        topic_counts = assertions_all["topic_key"].dropna().astype(str).str.strip()
+        topic_counts = topic_counts[topic_counts.ne("")]
+        if not topic_counts.empty:
+            counts_series = topic_counts.value_counts()
+
+    if counts_series is None or counts_series.empty:
+        st.info("match_keys/topic_key 全空，无法筛选。")
         return
 
-    counts_series = topic_counts.value_counts()
-
-    total_topics = int(len(counts_series))
-    st.caption(f"候选 topic_key 数量：{total_topics}（将分批让 AI 处理）")
+    total_keys = int(len(counts_series))
+    st.caption(f"候选 key 数量：{total_keys}（将分批让 AI 处理）")
 
     with st.expander("高级（可不看）", expanded=False):
         debug_terminal_logs = st.checkbox(
@@ -497,13 +524,13 @@ def _render_ai_section(
             value=False,
             help="打开：你运行 streamlit 的终端会看到每一批 AI 调用的耗时与数量。",
         )
-        default_max_total_topics = min(5000, max(200, total_topics))
-        max_total_topics = int(
+        default_max_total_keys = min(5000, max(200, total_keys))
+        max_total_keys = int(
             st.number_input(
-                "最多处理 topic_key 数量",
+                "最多处理 key 数量",
                 min_value=200,
                 max_value=12000,
-                value=int(default_max_total_topics),
+                value=int(default_max_total_keys),
                 step=100,
                 help="越大：越全，但更慢、也更费。一般 2000~5000 就够看效果。",
                 key="cluster_ai_max_total_topics_input",
@@ -511,7 +538,7 @@ def _render_ai_section(
         )
         chunk_size = int(
             st.number_input(
-                "每批 topic_key 数量",
+                "每批 key 数量",
                 min_value=MIN_CHUNK_SIZE,
                 max_value=MAX_CHUNK_SIZE,
                 value=DEFAULT_CHUNK_SIZE,
@@ -526,7 +553,7 @@ def _render_ai_section(
         if chunk_size < RECOMMENDED_MIN_CHUNK_SIZE:
             # Soft guidance: allow small chunk_size, but warn about time/cost.
             st.warning(
-                f"你现在每批是 {chunk_size} 个 topic_key。这样 AI 要调用很多次，会更慢、也更费。"
+                f"你现在每批是 {chunk_size} 个 key。这样 AI 要调用很多次，会更慢、也更费。"
                 f"建议每批至少 {RECOMMENDED_MIN_CHUNK_SIZE}（default={DEFAULT_CHUNK_SIZE}）。"
             )
 
@@ -596,18 +623,18 @@ def _render_ai_section(
             )
         )
 
-    topic_keys = [str(x).strip() for x in counts_series.index.tolist() if str(x).strip()]
-    topic_keys = topic_keys[: int(max_total_topics)]
-    count_by_topic = {str(k): int(v) for k, v in counts_series.head(int(max_total_topics)).items()}
-    candidate_records = _build_candidate_records(assertions_all, topic_keys, count_by_topic)
-    candidate_set = set(topic_keys)
+    candidate_keys = [str(x).strip() for x in counts_series.index.tolist() if str(x).strip()]
+    candidate_keys = candidate_keys[: int(max_total_keys)]
+    count_by_key = {str(k): int(v) for k, v in counts_series.head(int(max_total_keys)).items()}
+    candidate_records = _build_candidate_records(assertions_all, candidate_keys, count_by_key)
+    candidate_set = set(candidate_keys)
     hint_by_topic = {
-        str(item.get("topic_key") or "").strip(): str(item.get("hint") or "").strip()
+        str(item.get("key") or "").strip(): str(item.get("hint") or "").strip()
         for item in candidate_records
-        if str(item.get("topic_key") or "").strip()
+        if str(item.get("key") or "").strip()
     }
 
-    call_count = (len(topic_keys) + int(chunk_size) - 1) // int(chunk_size) if topic_keys else 0
+    call_count = (len(candidate_keys) + int(chunk_size) - 1) // int(chunk_size) if candidate_keys else 0
     resume_enabled = st.checkbox(
         "断点续跑（失败后继续）",
         value=True,
@@ -620,8 +647,8 @@ def _render_ai_section(
     resume_signature = _build_resume_signature(
         cluster_name=cluster_name,
         cluster_desc=cluster_desc,
-        topic_keys=topic_keys,
-        max_total_topics=int(max_total_topics),
+        candidate_keys=candidate_keys,
+        max_total_keys=int(max_total_keys),
         chunk_size=int(chunk_size),
     )
 
@@ -684,12 +711,12 @@ def _render_ai_section(
     elif cached_ok and cached_next_batch > call_count and call_count > 0:
         run_label = f"重新跑 AI（会覆盖上次结果，共 {call_count} 批）"
     else:
-        run_label = f"让 AI 分批筛 topic_key（共 {call_count} 次调用）"
+        run_label = f"让 AI 分批筛 key（共 {call_count} 次调用）"
 
     if st.button(
         run_label,
         type="primary",
-        disabled=not bool(topic_keys),
+        disabled=not bool(candidate_keys),
     ):
         start_batch_idx = 1
         merged_seed: dict | None = None
@@ -741,19 +768,19 @@ def _render_ai_section(
         st.markdown("**本次 AI 调用记录**")
         st.dataframe(pd.DataFrame(call_logs), width="stretch", hide_index=True)
 
-    include_items = _normalize_topic_items(result.get("include_topics"))
-    unsure_items = _normalize_topic_items(result.get("unsure_topics"))
+    include_items = _normalize_topic_items(result.get("include_keys") or result.get("include_topics"))
+    unsure_items = _normalize_topic_items(result.get("unsure_keys") or result.get("unsure_topics"))
 
     include_items = _filter_items_to_candidates(
         include_items,
         candidate_set=candidate_set,
-        count_by_topic=count_by_topic,
+        count_by_topic=count_by_key,
         hint_by_topic=hint_by_topic,
     )
     unsure_items = _filter_items_to_candidates(
         unsure_items,
         candidate_set=candidate_set,
-        count_by_topic=count_by_topic,
+        count_by_topic=count_by_key,
         hint_by_topic=hint_by_topic,
     )
     col_a, col_b = st.columns(2)
@@ -768,7 +795,7 @@ def _render_ai_section(
             hide_index=True,
         )
     else:
-        st.info("include 为空。你可以在“高级”里调大“最多处理 topic_key 数量”，或者换个板块名字更具体。")
+        st.info("include 为空。你可以在“高级”里调大“最多处理 key 数量”，或者换个板块名字更具体。")
 
     if unsure_items:
         st.markdown("**unsure（不确定）**")
@@ -784,5 +811,5 @@ def _render_ai_section(
         selected_cluster=selected_cluster,
         include_items=include_items,
         unsure_items=unsure_items,
-        count_by_topic=count_by_topic,
+        count_by_topic=count_by_key,
     )

@@ -99,9 +99,9 @@ def main() -> None:
         "数据表",
     ]
     selected_page_pre = str(st.session_state.get("main_page") or pages[0])
-    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"} or bool(
-        st.session_state.get("filter_group_by_cluster")
-    )
+    group_mode_pre = str(st.session_state.get("filter_group_mode") or "").strip()
+    legacy_group_by_cluster = bool(st.session_state.get("filter_group_by_cluster"))
+    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"} or group_mode_pre == "cluster" or legacy_group_by_cluster
 
     posts, assertions, missing = load_sources()
     if missing:
@@ -112,6 +112,7 @@ def main() -> None:
         st.warning("Turso 里还没有“已处理”的数据（processed_at 为空会被隐藏）。")
         st.stop()
     posts = enrich_posts(posts)
+    assertions = enrich_assertions(assertions)
 
     turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
@@ -201,7 +202,7 @@ def main() -> None:
         return
 
     if selected_page == "学习库":
-        show_learning_library(enrich_assertions(assertions_filtered))
+        show_learning_library(assertions_filtered)
         return
 
     if selected_page == "冲突/变化":
@@ -220,7 +221,7 @@ def main() -> None:
         posts_view["assertion_count"] = 0
     show_tables(
         posts_view,
-        enrich_assertions(assertions_filtered),
+        assertions_filtered,
         group_col=meta["group_col"],
         group_label=meta["group_label"],
     )

@@ -59,7 +59,7 @@ def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame,
 @dataclass(frozen=True)
 class ClusterMaps:
     cluster_name_by_key: Dict[str, str]
-    cluster_keys_by_topic_key: Dict[str, List[str]]
+    cluster_keys_by_member_key: Dict[str, List[str]]
     cluster_by_post_uid: Dict[str, str]
 
 
@@ -76,18 +76,20 @@ def build_cluster_maps(
             if key:
                 cluster_name_by_key[key] = name
 
-    cluster_keys_by_topic_key: Dict[str, List[str]] = {}
+    # Note: historical column name is still "topic_key" in DB/table,
+    # but we treat it as a generic "member_key" now.
+    cluster_keys_by_member_key: Dict[str, List[str]] = {}
     if not topic_map.empty:
         for _, row in topic_map.iterrows():
-            topic_key = str(row.get("topic_key") or "").strip()
+            member_key = str(row.get("topic_key") or "").strip()
             cluster_key = str(row.get("cluster_key") or "").strip()
-            if topic_key and cluster_key:
-                cluster_keys_by_topic_key.setdefault(topic_key, []).append(cluster_key)
-    if cluster_keys_by_topic_key:
-        for topic_key, keys in list(cluster_keys_by_topic_key.items()):
+            if member_key and cluster_key:
+                cluster_keys_by_member_key.setdefault(member_key, []).append(cluster_key)
+    if cluster_keys_by_member_key:
+        for member_key, keys in list(cluster_keys_by_member_key.items()):
             # keep unique + stable (sorted) for deterministic UI.
             uniq = sorted(set(str(k).strip() for k in keys if str(k).strip()))
-            cluster_keys_by_topic_key[topic_key] = uniq
+            cluster_keys_by_member_key[member_key] = uniq
 
     cluster_by_post_uid: Dict[str, str] = {}
     if not post_overrides.empty:
@@ -99,7 +101,7 @@ def build_cluster_maps(
 
     return ClusterMaps(
         cluster_name_by_key=cluster_name_by_key,
-        cluster_keys_by_topic_key=cluster_keys_by_topic_key,
+        cluster_keys_by_member_key=cluster_keys_by_member_key,
         cluster_by_post_uid=cluster_by_post_uid,
     )
 
@@ -127,15 +129,32 @@ def enrich_assertions_with_clusters(
     maps = build_cluster_maps(clusters, topic_map, post_overrides)
     out = assertions.copy()
 
-    topic_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
+    if "match_keys" in out.columns:
+        match_keys = out["match_keys"]
+    else:
+        match_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
     post_uids = out.get("post_uid", pd.Series([""] * len(out), index=out.index))
 
-    def _cluster_keys_for_topic_and_post(topic_key: object, post_uid: object) -> list[str]:
-        t = str(topic_key or "").strip()
-        if t:
-            keys = maps.cluster_keys_by_topic_key.get(t)
-            if keys:
-                return list(keys)
+    def _cluster_keys_for_keys_and_post(keys_value: object, post_uid: object) -> list[str]:
+        keys_out: list[str] = []
+        if isinstance(keys_value, list):
+            for item in keys_value:
+                member_key = str(item or "").strip()
+                if not member_key:
+                    continue
+                resolved = maps.cluster_keys_by_member_key.get(member_key)
+                if resolved:
+                    keys_out.extend(resolved)
+        else:
+            member_key = str(keys_value or "").strip()
+            if member_key:
+                resolved = maps.cluster_keys_by_member_key.get(member_key)
+                if resolved:
+                    keys_out.extend(resolved)
+
+        if keys_out:
+            # Keep unique + stable for deterministic UI.
+            return sorted(set(str(x).strip() for x in keys_out if str(x).strip()))
         p = str(post_uid or "").strip()
         if p:
             override_key = str(maps.cluster_by_post_uid.get(p, "") or "").strip()
@@ -144,8 +163,8 @@ def enrich_assertions_with_clusters(
         return []
 
     out["cluster_keys"] = [
-        _cluster_keys_for_topic_and_post(topic_key, post_uid)
-        for topic_key, post_uid in zip(topic_keys.tolist(), post_uids.tolist(), strict=False)
+        _cluster_keys_for_keys_and_post(keys_value, post_uid)
+        for keys_value, post_uid in zip(match_keys.tolist(), post_uids.tolist(), strict=False)
     ]
 
     def _displays_for_keys(keys: object) -> list[str]:

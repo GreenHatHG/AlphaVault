@@ -33,17 +33,17 @@ def _normalize_topic_items(raw: object) -> list[dict]:
         out: list[dict] = []
         for item in raw:
             if isinstance(item, str):
-                topic_key = item.strip()
-                if topic_key:
-                    out.append({"topic_key": topic_key, "confidence": None, "reason": ""})
+                key = item.strip()
+                if key:
+                    out.append({"key": key, "confidence": None, "reason": ""})
                 continue
             if isinstance(item, dict):
-                topic_key = str(item.get("topic_key") or "").strip()
-                if not topic_key:
+                key = str(item.get("key") or item.get("topic_key") or "").strip()
+                if not key:
                     continue
                 out.append(
                     {
-                        "topic_key": topic_key,
+                        "key": key,
                         "confidence": item.get("confidence", None),
                         "reason": str(item.get("reason") or "").strip(),
                     }
@@ -68,65 +68,53 @@ def _build_candidate_records(
     topic_keys: list[str],
     count_by_topic: dict,
 ) -> list[dict]:
-    if not topic_keys:
+    keys = [str(x).strip() for x in (topic_keys or []) if str(x).strip()]
+    if not keys:
         return []
 
-    cols = ["topic_key"]
-    for col in ["topic_type", "topic_value", "stock_names", "industries", "commodities", "indices"]:
-        if col in assertions_all.columns:
-            cols.append(col)
-    df = assertions_all[cols].copy()
-    df["topic_key"] = df["topic_key"].astype(str).str.strip()
-    df = df[df["topic_key"].isin(set(topic_keys))]
-    if df.empty:
-        return [{"topic_key": k, "count": int(count_by_topic.get(k, 0)), "hint": ""} for k in topic_keys]
-
-    first_type = (
-        df.groupby("topic_key")["topic_type"].first()
-        if "topic_type" in df.columns
-        else pd.Series(dtype=str)
-    )
-    first_value = (
-        df.groupby("topic_key")["topic_value"].first()
-        if "topic_value" in df.columns
-        else pd.Series(dtype=str)
-    )
-    first_stock_name = (
-        df.groupby("topic_key")["stock_names"].apply(_pick_first_nonempty_from_list_col)
-        if "stock_names" in df.columns
-        else pd.Series(dtype=str)
-    )
-    first_industry = (
-        df.groupby("topic_key")["industries"].apply(_pick_first_nonempty_from_list_col)
-        if "industries" in df.columns
-        else pd.Series(dtype=str)
-    )
+    # Best-effort stock hints (conservative mapping).
+    stock_name_by_code: dict[str, str] = {}
+    stock_industry_by_code: dict[str, str] = {}
+    if (
+        "stock_codes" in assertions_all.columns
+        and "stock_names" in assertions_all.columns
+        and "industries" in assertions_all.columns
+    ):
+        for codes, names, industries in zip(
+            assertions_all["stock_codes"].tolist(),
+            assertions_all["stock_names"].tolist(),
+            assertions_all["industries"].tolist(),
+            strict=False,
+        ):
+            if not isinstance(codes, list) or not isinstance(names, list):
+                continue
+            codes = [str(x).strip() for x in codes if str(x).strip()]
+            names = [str(x).strip() for x in names if str(x).strip()]
+            inds = [str(x).strip() for x in industries if str(x).strip()] if isinstance(industries, list) else []
+            if len(codes) != 1 or len(names) != 1:
+                continue
+            code = codes[0]
+            name = names[0]
+            if code and name and code not in stock_name_by_code:
+                stock_name_by_code[code] = name
+            if code and inds and code not in stock_industry_by_code:
+                stock_industry_by_code[code] = inds[0]
 
     records: list[dict] = []
-    for topic_key in topic_keys:
-        count = int(count_by_topic.get(topic_key, 0))
-        t = str(first_type.get(topic_key, "") or "").strip()
-        v = str(first_value.get(topic_key, "") or "").strip()
-        stock_name = (
-            str(first_stock_name.get(topic_key, "") or "").strip()
-            if isinstance(first_stock_name, pd.Series)
-            else ""
-        )
-        industry = (
-            str(first_industry.get(topic_key, "") or "").strip()
-            if isinstance(first_industry, pd.Series)
-            else ""
-        )
+    for key in keys:
+        count = int(count_by_topic.get(key, 0))
         hint_parts: list[str] = []
-        if t == "stock":
-            if stock_name:
-                hint_parts.append(f"stock_name={stock_name}")
-            if industry:
-                hint_parts.append(f"industry={industry}")
-            if not hint_parts and v:
-                hint_parts.append(f"stock_value={v}")
+        if key.startswith("stock:"):
+            code = key[len("stock:") :].strip()
+            if code:
+                name = str(stock_name_by_code.get(code, "") or "").strip()
+                industry = str(stock_industry_by_code.get(code, "") or "").strip()
+                if name:
+                    hint_parts.append(f"stock_name={name}")
+                if industry:
+                    hint_parts.append(f"industry={industry}")
         hint = ", ".join(hint_parts)[:120]
-        records.append({"topic_key": topic_key, "count": count, "hint": hint})
+        records.append({"key": key, "count": count, "hint": hint})
     return records
 
 
@@ -151,14 +139,14 @@ def _filter_items_to_candidates(
 ) -> list[dict]:
     out: list[dict] = []
     for item in items:
-        topic_key = str(item.get("topic_key") or "").strip()
-        if not topic_key or topic_key not in candidate_set:
+        key = str(item.get("key") or item.get("topic_key") or "").strip()
+        if not key or key not in candidate_set:
             continue
         out.append(
             {
                 **item,
-                "count": int(count_by_topic.get(topic_key, 0)),
-                "hint": str(hint_by_topic.get(topic_key, "") or "").strip(),
+                "count": int(count_by_topic.get(key, 0)),
+                "hint": str(hint_by_topic.get(key, "") or "").strip(),
             }
         )
     return out
